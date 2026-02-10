@@ -43,7 +43,7 @@ const Navbar: React.FC = () => {
           <div className="flex items-center">
             <Link to="/" className="flex items-center group">
               <img 
-                src="/static/img/bioimage-io-logo.svg"
+                src="/static/img/ri-scale-logo.png"
                 alt="RI-SCALE Model Hub"
                 className="h-10 group-hover:scale-105 transition-transform duration-300"
               />
@@ -65,7 +65,7 @@ const Navbar: React.FC = () => {
               Applications
             </Link>
             <a 
-              href="https://ri-scale.github.io/model-hub/docs" 
+              href="https://modelhub.riscale.eu/docs" 
               className={navLinkClasses("/docs")}
               target="_blank"
               rel="noopener noreferrer"
@@ -165,7 +165,7 @@ const Navbar: React.FC = () => {
               Applications
             </Link>
             <a 
-              href="https://ri-scale.github.io/model-hub/docs"
+              href="https://modelhub.riscale.eu/docs"
               className={mobileNavLinkClasses("/docs")}
               target="_blank"
               rel="noopener noreferrer"
