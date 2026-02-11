@@ -806,7 +806,7 @@ const ArtifactDetails = () => {
               }}
             >
               <img 
-                src="/static/img/ri-scale-logo.png"
+                src="/static/img/ri-scale-alt-logo.png" 
                 alt="RI-SCALE Model Hub"
                 style={{
                   height: '40px',

@@ -80,7 +80,7 @@ const About: React.FC = () => {
         </p>
         <div className="flex flex-wrap items-center gap-6 mt-4">
           <img 
-            src="/static/img/ri-scale-logo.png"
+            src="/static/img/logo-ri-scale-black-orange-icon.png" 
             alt="RI-SCALE Logo" 
             className="h-16 object-contain"
           />
