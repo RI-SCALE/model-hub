@@ -97,6 +97,12 @@ const AgentPage: React.FC = () => {
         );
         console.log("AgentPage: Agents found:", initialAgents);
 
+        // Filter to only show the specific requested agent
+        const targetAgentAlias = 'leisure-scrimmage-disliked-more';
+        const filteredAgents = initialAgents.filter((agent: any) => 
+            agent.alias === targetAgentAlias || agent.id.includes(targetAgentAlias)
+        );
+
         // Fetch active services to check status
         let activeServiceIds = new Set<string>();
         try {
@@ -112,7 +118,7 @@ const AgentPage: React.FC = () => {
             console.warn("AgentPage: Failed to list services, assuming offline", e);
         }
 
-        const mappedAgents: Agent[] = initialAgents.map((art: any) => {
+        const mappedAgents: Agent[] = filteredAgents.map((art: any) => {
           const serviceId = art.alias ? `hypha-agents/${art.alias}` : undefined;
           const isOnline = serviceId && activeServiceIds.has(serviceId);
           
