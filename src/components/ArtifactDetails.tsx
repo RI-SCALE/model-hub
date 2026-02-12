@@ -22,6 +22,7 @@ import NavigateNextIcon from '@mui/icons-material/NavigateNext';
 import NavigateBeforeIcon from '@mui/icons-material/NavigateBefore';
 import { ArtifactInfo } from '../types/artifact';
 import CodeIcon from '@mui/icons-material/Code';
+import LaunchIcon from '@mui/icons-material/Launch';
 import { partnerService } from '../services/partnerService';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
@@ -33,7 +34,7 @@ import ArtifactFiles from './ArtifactFiles';
 import { useBookmarks } from '../hooks/useBookmarks';
 
 const ArtifactDetails = () => {
-  const { id, version } = useParams<{ id: string; version?: string }>();
+  const { workspace, id, version } = useParams<{ workspace?: string; id: string; version?: string }>();
   const { selectedResource, fetchResource, isLoading, error, user, isLoggedIn, artifactManager } = useHyphaStore();
   const [documentation, setDocumentation] = useState<string | null>(null);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
@@ -48,6 +49,7 @@ const ArtifactDetails = () => {
   const [showDownloadInfo, setShowDownloadInfo] = useState(false);
   const [isStaged, setIsStaged] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
+  const [hasStaticSite, setHasStaticSite] = useState(false);
   const navigate = useNavigate();
   const { isBookmarked, toggleBookmark } = useBookmarks(artifactManager);
 
@@ -84,11 +86,16 @@ const ArtifactDetails = () => {
 
   useEffect(() => {
     if (id) {
-      // If the id doesn't contain a slash, assume it's in the ri-scale workspace
-      const artifactId = id.includes('/') ? id : `ri-scale/${id}`;
+      let artifactId = id;
+      if (workspace) {
+        artifactId = `${workspace}/${id}`;
+      } else if (!id.includes('/')) {
+        // If the id doesn't contain a slash, assume it's in the ri-scale workspace
+        artifactId = `ri-scale/${id}`;
+      }
       fetchResource(artifactId, version);
     }
-  }, [id, fetchResource, version]);
+  }, [workspace, id, fetchResource, version]);
 
   useEffect(() => {
     const fetchDocumentation = async () => {
@@ -114,6 +121,27 @@ const ArtifactDetails = () => {
 
     fetchDocumentation();
   }, [selectedResource?.id, selectedResource?.manifest.documentation]);
+
+  useEffect(() => {
+    const checkStaticSite = async () => {
+      if (selectedResource?.id) {
+        try {
+          const indexUrl = resolveHyphaUrl('index.html', selectedResource.id);
+          const response = await fetch(indexUrl, { method: 'HEAD' });
+          if (response.ok) {
+            setHasStaticSite(true);
+          } else {
+            setHasStaticSite(false);
+          }
+        } catch (error) {
+          console.error('Failed to check static site:', error);
+          setHasStaticSite(false);
+        }
+      }
+    };
+
+    checkStaticSite();
+  }, [selectedResource?.id]);
 
   useEffect(() => {
     if (selectedResource?.versions?.length) {
@@ -157,6 +185,13 @@ const ArtifactDetails = () => {
       setCurrentImageIndex((prev) => 
         (prev - 1 + selectedResource.manifest.covers!.length) % selectedResource.manifest.covers!.length
       );
+    }
+  };
+
+  const handleOpenStaticSite = () => {
+    if (selectedResource?.id) {
+      const indexUrl = resolveHyphaUrl('index.html', selectedResource.id);
+      window.open(indexUrl, '_blank');
     }
   };
 
@@ -336,6 +371,29 @@ const ArtifactDetails = () => {
             >
               Download
             </Button>
+            {hasStaticSite && (
+              <Button
+                onClick={handleOpenStaticSite}
+                startIcon={<LaunchIcon />}
+                variant="contained"
+                size="medium"
+                sx={{
+                  backgroundColor: '#0ea5e9', // sky-500
+                  color: 'white',
+                  fontWeight: 600,
+                  borderRadius: '6px',
+                  boxShadow: 'none',
+                  textTransform: 'none',
+                  '&:hover': {
+                    backgroundColor: '#0284c7', // sky-600
+                    boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+                  },
+                }}
+              >
+                Open App
+              </Button>
+            )}
+            
             {canEdit && (
               <Button
                 onClick={handleEdit}
