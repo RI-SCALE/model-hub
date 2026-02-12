@@ -61,6 +61,11 @@ export const BookmarkedArtifacts: React.FC<BookmarkedArtifactsProps> = ({ search
   // Convert bookmarks to ArtifactInfo format for ArtifactCard
   const bookmarkArtifacts: ArtifactInfo[] = filteredBookmarks.map(bookmark => ({
     id: bookmark.id,
+    workspace: 'unknown',
+    file_count: 0,
+    created_at: 0,
+    last_modified: 0,
+    current_version: 'latest',
     manifest: {
       name: bookmark.name,
       description: bookmark.description,
@@ -70,6 +75,7 @@ export const BookmarkedArtifacts: React.FC<BookmarkedArtifactsProps> = ({ search
       tags: [],
       authors: [],
       license: '',
+      uploader: { email: '', name: '' }
     },
     download_count: 0,
     view_count: 0,
