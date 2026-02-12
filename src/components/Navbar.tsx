@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import LoginButton from './LoginButton';
 import { BiCube } from 'react-icons/bi';
-import { BsDatabase, BsCollection, BsPeople } from 'react-icons/bs';
+import { BsDatabase, BsCollection, BsPeople, BsRobot } from 'react-icons/bs';
 import { HiOutlineBeaker } from 'react-icons/hi';
 import { IoDocumentTextOutline, IoCloudUploadOutline } from 'react-icons/io5';
 import { AiOutlineInfoCircle } from 'react-icons/ai';
@@ -56,6 +56,10 @@ const Navbar: React.FC = () => {
             <Link to="/models" className={navLinkClasses("/models")}>
               <BiCube className="mr-2" size={18} />
               Models
+            </Link>
+            <Link to="/agents" className={navLinkClasses("/agents")}>
+              <BsRobot className="mr-2" size={18} />
+              Agents
             </Link>
             <Link 
               to="/docs" 
@@ -128,6 +132,14 @@ const Navbar: React.FC = () => {
             >
               <BiCube className="mr-3" size={20} />
               Models
+            </Link>
+            <Link 
+              to="/agents" 
+              className={mobileNavLinkClasses("/agents")}
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              <BsRobot className="mr-3" size={20} />
+              Agents
             </Link>
             <Link 
               to="/docs"
