@@ -49,6 +49,7 @@ const AgentPage: React.FC = () => {
   const [isTyping, setIsTyping] = useState(false);
   const [loadingAgents, setLoadingAgents] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [apiKey, setApiKey] = useState<string | null>(null);
   
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -139,6 +140,30 @@ const AgentPage: React.FC = () => {
 
     if (isConnected && server) {
         fetchAgents();
+
+        // Fetch OpenAI API Key from valid artifacts
+        const fetchApiKey = async () => {
+          try {
+            const am = await server.getService('public/artifact-manager');
+            // Try fetching specific secret artifact
+            // We assume it returns a JSON with api_key field
+            const secretArtifact = await am.read({ artifact_id: 'ri-scale/openai-secret', _rkwargs: true });
+            if (secretArtifact?.files) {
+               const file = secretArtifact.files.find((f: any) => f.name.endsWith('json') || f.name.endsWith('txt'));
+               if (file && file.url) {
+                   const r = await fetch(file.url);
+                   const data = await r.json();
+                   if (data.api_key) {
+                       console.log("AgentPage: Loaded API Key from artifact.");
+                       setApiKey(data.api_key);
+                   }
+               }
+            }
+          } catch (e) {
+            console.log("AgentPage: No API key artifact found or access denied (ri-scale/openai-secret).");
+          }
+        };
+        fetchApiKey();
     }
   }, [server, isConnected]);
 
@@ -199,7 +224,8 @@ const AgentPage: React.FC = () => {
       // If we have a service, call chat
       const response = await agentService.chat({
           text: newMessage.content,
-          history: [] // Simplify history for now
+          history: [], // Simplify history for now
+          context: apiKey ? { openai_api_key: apiKey } : undefined
       });
 
       const responseText = typeof response === 'string' ? response : (response.text || JSON.stringify(response));
