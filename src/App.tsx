@@ -11,6 +11,7 @@ import Upload from './components/Upload';
 import MyArtifacts from './components/MyArtifacts';
 import Edit from './components/Edit';
 import PartnersPage from './pages/PartnersPage';
+import AgentPage from './pages/AgentPage';
 import './index.css'
 import './github-markdown.css'
 import { HyphaProvider } from './HyphaContext';
@@ -68,6 +69,7 @@ const AppContent: React.FC = () => {
             path="/about" 
             element={<About />} 
           />
+          <Route path="/agents" element={<AgentPage />} />
           <Route path="/partners" element={<PartnersPage />} />
           <Route path="/models" element={<ArtifactGrid type="model" />} />
           <Route path="/upload" element={<Upload />} />
