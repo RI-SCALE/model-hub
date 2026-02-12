@@ -87,11 +87,15 @@ const AgentPage: React.FC = () => {
         console.log("AgentPage: Fetching agents...");
         const am = await server.getService('public/artifact-manager');
         // Fetch from the specific collection for agents
-        // We use the parent_id found: 'hypha-agents/agents'
-        const initialAgents = await am.list({
-             parent_id: 'hypha-agents/agents',
-             limit: 100
-        });
+        // We need to pass positional arguments correctly to the list function in JS
+        // list(parent_id, keywords, filters, limit, offset, order_by, pagination, context)
+        // Since we can't easily pass keyword args, we use positional args with undefined for defaults
+        const initialAgents = await am.list(
+             'hypha-agents/agents', // parent_id
+             undefined, // keywords
+             undefined, // filters
+             100 // limit
+        );
         console.log("AgentPage: Agents found:", initialAgents);
 
         // Fetch active services to check status
