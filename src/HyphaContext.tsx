@@ -51,8 +51,16 @@ export function HyphaProvider({ children }: { children: React.ReactNode }) {
         setHyphaCoreAPI(api);
         setIsHyphaCoreReady(true);
         console.log("HyphaCore initialized successfully");
-      } catch (error) {
-        console.error("Failed to initialize HyphaCore:", error);
+      } catch (error: any) {
+        if (error.message && error.message.includes("Server already running")) {
+           console.log("HyphaCore already running");
+           setIsHyphaCoreReady(true);
+           // We might want to try to get the existing API instance if possible, 
+           // but HyphaCore doesn't expose a static getter currently. 
+           // Assuming if it's running it works.
+        } else {
+           console.error("Failed to initialize HyphaCore:", error);
+        }
       }
     };
     
