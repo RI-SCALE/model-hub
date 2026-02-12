@@ -124,24 +124,41 @@ const ArtifactDetails = () => {
 
   useEffect(() => {
     const checkStaticSite = async () => {
-      if (selectedResource?.id) {
-        try {
-          const indexUrl = resolveHyphaUrl('index.html', selectedResource.id);
-          const response = await fetch(indexUrl, { method: 'HEAD' });
-          if (response.ok) {
+      setHasStaticSite(false);
+      
+      let targetUrl = null;
+      if (selectedResource?.alias) {
+        targetUrl = `https://hypha.aicell.io/ri-scale/view/${selectedResource.alias}/`;
+      } else if (selectedResource?.id) {
+        targetUrl = resolveHyphaUrl('index.html', selectedResource.id);
+      }
+      
+      if (targetUrl) {
+         try {
+            const response = await fetch(targetUrl, { method: 'GET' });
+            if (!response.ok) {
+               return; 
+            }
+            // Check if it returned a JSON error (common in Hypha for failed views)
+            const contentType = response.headers.get("content-type");
+            if (contentType && contentType.includes("application/json")) {
+               try {
+                  const data = await response.clone().json();
+                  if (data.success === false) return;
+               } catch (e) {
+                   // ignore json parse error
+               }
+            }
             setHasStaticSite(true);
-          } else {
+         } catch (error) {
+            console.error('Failed to check static site:', error);
             setHasStaticSite(false);
-          }
-        } catch (error) {
-          console.error('Failed to check static site:', error);
-          setHasStaticSite(false);
-        }
+         }
       }
     };
 
     checkStaticSite();
-  }, [selectedResource?.id]);
+  }, [selectedResource?.id, selectedResource?.alias]);
 
   useEffect(() => {
     if (selectedResource?.versions?.length) {
