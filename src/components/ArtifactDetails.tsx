@@ -189,7 +189,9 @@ const ArtifactDetails = () => {
   };
 
   const handleOpenStaticSite = () => {
-    if (selectedResource?.id) {
+    if (selectedResource?.alias) {
+      window.open(`https://hypha.aicell.io/ri-scale/view/${selectedResource.alias}/`, '_blank');
+    } else if (selectedResource?.id) {
       const indexUrl = resolveHyphaUrl('index.html', selectedResource.id);
       window.open(indexUrl, '_blank');
     }
