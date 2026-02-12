@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Comment, CommentsData } from '../types/comments';
 import { useHyphaStore } from '../store/hyphaStore';
 import { v4 as uuidv4 } from 'uuid';
-import ReviewWriter from './ReviewWriter';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
@@ -216,7 +215,7 @@ const CommentItem: React.FC<{
                   onAddComment={onAddComment}
                   onEditComment={onEditComment}
                   level={1}
-                  isLastReply={index === comment.replies?.length - 1}
+                  isLastReply={index === (comment.replies?.length || 0) - 1}
                   comments={comments}
                 />
               ))}
@@ -285,7 +284,6 @@ const Comments: React.FC<CommentsProps> = ({ artifactId }) => {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const { artifactManager, user } = useHyphaStore();
   const [isLoading, setIsLoading] = useState(true);
-  const [showReviewWriter, setShowReviewWriter] = useState(false);
 
   useEffect(() => {
     loadComments();
@@ -402,16 +400,6 @@ const Comments: React.FC<CommentsProps> = ({ artifactId }) => {
     }
   };
 
-  // Add handler for review submission
-  const handleReviewSubmit = (reviewComment: string) => {
-    // Append the review comment to existing content with a newline
-    setNewComment(prev => {
-      const prefix = prev.trim() ? prev.trim() + '\n\n' : '';
-      return prefix + reviewComment;
-    });
-    setShowReviewWriter(false);
-  };
-
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -473,17 +461,6 @@ const Comments: React.FC<CommentsProps> = ({ artifactId }) => {
                       className="w-full min-h-[80px] p-2 text-sm border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     />
                     <div className="flex justify-between">
-                      {/* Review Helper Button */}
-                      <button
-                        onClick={() => setShowReviewWriter(true)}
-                        className="px-4 py-1.5 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-1"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                        </svg>
-                        Review Checklist
-                      </button>
-
                       <button
                         onClick={() => addComment(newComment)}
                         disabled={!newComment.trim()}
@@ -502,13 +479,6 @@ const Comments: React.FC<CommentsProps> = ({ artifactId }) => {
           )}
         </div>
       </div>
-
-      {/* Add ReviewWriter dialog */}
-      <ReviewWriter
-        isOpen={showReviewWriter}
-        onClose={() => setShowReviewWriter(false)}
-        onSubmit={handleReviewSubmit}
-      />
     </div>
   );
 };
