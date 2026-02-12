@@ -9,11 +9,12 @@ import {
   TagIcon,
   CodeBracketIcon,
   BookOpenIcon,
-  ShieldCheckIcon
+  ShieldCheckIcon,
+  CpuChipIcon
 } from '@heroicons/react/24/outline';
 
 const Docs: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'browsing' | 'uploading'>('browsing');
+  const [activeTab, setActiveTab] = useState<'browsing' | 'uploading' | 'agents'>('browsing');
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 min-h-[calc(100vh-64px)]">
@@ -51,6 +52,18 @@ const Docs: React.FC = () => {
           >
             <CloudArrowUpIcon className="h-5 w-5" />
             Uploading & Sharing
+          </button>
+          <button
+            onClick={() => setActiveTab('agents')}
+            className={`
+              whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors
+              ${activeTab === 'agents'
+                ? 'border-ri-orange text-ri-orange'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}
+            `}
+          >
+            <CpuChipIcon className="h-5 w-5" />
+            AI Agents
           </button>
         </nav>
       </div>
@@ -125,7 +138,7 @@ const Docs: React.FC = () => {
                 </div>
              </section>
           </div>
-        ) : (
+        ) : activeTab === 'uploading' ? (
           <div className="space-y-8 fade-in">
              <section className="bg-gray-900 text-white rounded-xl p-8 shadow-md">
                  <div className="flex flex-col sm:flex-row items-center justify-between gap-6">
@@ -180,6 +193,64 @@ const Docs: React.FC = () => {
                    All uploaded models undergo a validation process to ensure they contain necessary metadata and file structures. 
                    We encourage providing comprehensive descriptions to foster trust and reproducibility.
                 </p>
+             </section>
+          </div>
+        ) : (
+          <div className="space-y-8 fade-in">
+             <section className="bg-white border border-gray-200 rounded-xl p-6 sm:p-8 shadow-sm">
+                <div className="flex items-start gap-4">
+                   <div className="hidden sm:flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-orange-50 text-ri-orange">
+                      <CpuChipIcon className="h-6 w-6" />
+                   </div>
+                   <div>
+                      <h2 className="text-xl font-semibold text-gray-900 mb-2">AI Agents</h2>
+                      <p className="text-gray-600 mb-6">
+                         Interact with specialized AI agents to navigate services and resources. The core agent is the Euro-BioImaging Finder.
+                      </p>
+                      
+                      <div className="bg-gray-50 rounded-lg p-5 border border-gray-100 mb-6">
+                         <h3 className="font-semibold text-gray-900 mb-2">Euro-BioImaging Finder</h3>
+                         <code className="text-xs bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 block w-fit mb-3">
+                           hypha-agents/leisure-scrimmage-disliked-more
+                         </code>
+                         <p className="text-sm text-gray-700 mb-4">
+                           This agent helps you discover imaging technologies, instruments, and services. It has access to a live index of resources.
+                         </p>
+                         
+                         <strong className="text-sm font-medium text-gray-900 block mb-2">Capabilities:</strong>
+                         <ul className="list-disc list-inside text-sm text-gray-600 space-y-1 ml-1">
+                            <li><strong>Geographic Queries:</strong> Find nodes in specific countries (e.g., "facilities in Germany").</li>
+                            <li><strong>Technology Queries:</strong> Locate specific techniques (e.g., "super-resolution microscopy").</li>
+                            <li><strong>General Assistance:</strong> Guides on accessing services.</li>
+                         </ul>
+                      </div>
+
+                      <div className="space-y-4">
+                         <h4 className="font-semibold text-gray-900 text-sm">How it Works</h4>
+                         <p className="text-sm text-gray-600">
+                            The agent uses specialized tools to query the database:
+                         </p>
+                         <ul className="grid sm:grid-cols-2 gap-3 text-sm text-gray-600">
+                            <li className="flex items-center gap-2">
+                               <span className="w-1.5 h-1.5 rounded-full bg-ri-orange/60"></span>
+                               <code>read_tech_details</code>: Technology specs
+                            </li>
+                            <li className="flex items-center gap-2">
+                               <span className="w-1.5 h-1.5 rounded-full bg-ri-orange/60"></span>
+                               <code>read_node_details</code>: Facility info
+                            </li>
+                            <li className="flex items-center gap-2">
+                               <span className="w-1.5 h-1.5 rounded-full bg-ri-orange/60"></span>
+                               <code>read_nodes_by_country</code>: Geographic search
+                            </li>
+                            <li className="flex items-center gap-2">
+                               <span className="w-1.5 h-1.5 rounded-full bg-ri-orange/60"></span>
+                               <code>fulltext_search</code>: Broad search
+                            </li>
+                         </ul>
+                      </div>
+                   </div>
+                </div>
              </section>
           </div>
         )}
