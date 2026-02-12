@@ -90,8 +90,7 @@ const AgentPage: React.FC = () => {
         // We use the parent_id found: 'hypha-agents/agents'
         const initialAgents = await am.list({
              parent_id: 'hypha-agents/agents',
-             limit: 100,
-             _rkwargs: true
+             limit: 100
         });
         console.log("AgentPage: Agents found:", initialAgents);
 
@@ -147,7 +146,7 @@ const AgentPage: React.FC = () => {
             const am = await server.getService('public/artifact-manager');
             // Try fetching specific secret artifact
             // We assume it returns a JSON with api_key field
-            const secretArtifact = await am.read({ artifact_id: 'ri-scale/openai-secret', _rkwargs: true });
+            const secretArtifact = await am.read({ artifact_id: 'ri-scale/openai-secret' });
             if (secretArtifact?.files) {
                const file = secretArtifact.files.find((f: any) => f.name.endsWith('json') || f.name.endsWith('txt'));
                if (file && file.url) {
