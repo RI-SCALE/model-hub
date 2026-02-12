@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 import { 
   MagnifyingGlassIcon, 
   FunnelIcon, 
@@ -14,7 +14,17 @@ import {
 } from '@heroicons/react/24/outline';
 
 const Docs: React.FC = () => {
+  const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState<'browsing' | 'uploading' | 'agents'>('browsing');
+
+  useEffect(() => {
+    const tabOption = searchParams.get('tab');
+    if (tabOption === 'agents') {
+      setActiveTab('agents');
+    } else if (tabOption === 'uploading') {
+      setActiveTab('uploading');
+    }
+  }, [searchParams]);
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 min-h-[calc(100vh-64px)]">
@@ -52,18 +62,6 @@ const Docs: React.FC = () => {
           >
             <CloudArrowUpIcon className="h-5 w-5" />
             Uploading & Sharing
-          </button>
-          <button
-            onClick={() => setActiveTab('agents')}
-            className={`
-              whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors
-              ${activeTab === 'agents'
-                ? 'border-ri-orange text-ri-orange'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}
-            `}
-          >
-            <CpuChipIcon className="h-5 w-5" />
-            AI Agents
           </button>
         </nav>
       </div>

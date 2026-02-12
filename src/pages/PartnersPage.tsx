@@ -49,7 +49,7 @@ const PartnersPage = () => {
         <img 
             src={partner.icon} 
             alt={partner.name} 
-            className="max-h-full max-w-full object-contain filter grayscale group-hover:grayscale-0 transition-all duration-300"
+            className="max-h-full max-w-full object-contain transition-all duration-300"
             onError={(e) => {
                 const img = e.target as HTMLImageElement;
                 if (img.src !== window.location.origin + '/static/img/ri-scale-alt-logo.png') {

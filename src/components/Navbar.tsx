@@ -61,16 +61,16 @@ const Navbar: React.FC = () => {
               <BsRobot className="mr-2" size={18} />
               Agents
             </Link>
+            <Link to="/partners" className={navLinkClasses("/partners")}>
+              <BsPeople className="mr-2" size={18} />
+              Partners
+            </Link>
             <Link 
               to="/docs" 
               className={navLinkClasses("/docs")}
             >
               <IoDocumentTextOutline className="mr-2" size={18} />
               Docs
-            </Link>
-            <Link to="/partners" className={navLinkClasses("/partners")}>
-              <BsPeople className="mr-2" size={18} />
-              Partners
             </Link>
             <Link to="/about" className={navLinkClasses("/about")}>
               <AiOutlineInfoCircle className="mr-2" size={18} />
@@ -142,20 +142,20 @@ const Navbar: React.FC = () => {
               Agents
             </Link>
             <Link 
-              to="/docs"
-              className={mobileNavLinkClasses("/docs")}
-              onClick={() => setIsMobileMenuOpen(false)}
-            >
-              <IoDocumentTextOutline className="mr-3" size={18} />
-              Docs
-            </Link>
-            <Link 
               to="/partners" 
               className={mobileNavLinkClasses("/partners")}
               onClick={() => setIsMobileMenuOpen(false)}
             >
               <BsPeople className="mr-3" size={18} />
               Partners
+            </Link>
+            <Link 
+              to="/docs"
+              className={mobileNavLinkClasses("/docs")}
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              <IoDocumentTextOutline className="mr-3" size={18} />
+              Docs
             </Link>
             <Link 
               to="/about" 
