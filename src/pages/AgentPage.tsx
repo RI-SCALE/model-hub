@@ -49,7 +49,6 @@ const AgentPage: React.FC = () => {
   const [isTyping, setIsTyping] = useState(false);
   const [loadingAgents, setLoadingAgents] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
-  const [apiKey, setApiKey] = useState<string | null>(null);
   
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
@@ -143,30 +142,6 @@ const AgentPage: React.FC = () => {
 
     if (isConnected && server) {
         fetchAgents();
-
-        // Fetch OpenAI API Key from valid artifacts
-        const fetchApiKey = async () => {
-          try {
-            const am = await server.getService('public/artifact-manager');
-            // Try fetching specific secret artifact
-            // We assume it returns a JSON with api_key field
-            const secretArtifact = await am.read({ artifact_id: 'ri-scale/openai-secret' });
-            if (secretArtifact?.files) {
-               const file = secretArtifact.files.find((f: any) => f.name.endsWith('json') || f.name.endsWith('txt'));
-               if (file && file.url) {
-                   const r = await fetch(file.url);
-                   const data = await r.json();
-                   if (data.api_key) {
-                       console.log("AgentPage: Loaded API Key from artifact.");
-                       setApiKey(data.api_key);
-                   }
-               }
-            }
-          } catch (e) {
-            console.log("AgentPage: No API key artifact found or access denied (ri-scale/openai-secret).");
-          }
-        };
-        fetchApiKey();
     }
   }, [server, isConnected]);
 
@@ -200,36 +175,24 @@ const AgentPage: React.FC = () => {
     setIsTyping(true);
 
     try {
-      // Attempt to connect to the agent service and chat
-      // This logic assumes the agent exposes a 'chat' or 'run' method
-      // Or we should assume a generic agent-runner interface if specific service fails.
-      
-      let agentService;
-      let serviceAvailable = false;
-      
+      let proxyService;
       try {
-           // Try specific service first: hypha-agents/alias
-           const serviceId = selectedAgent.service_id || selectedAgent.id;
-           agentService = await server.getService(serviceId);
-           serviceAvailable = true;
+           // We connect to our custom chat proxy which handles the secret key
+           // The service ID 'ri-scale/chat-proxy' assumes the proxy script is running 
+           // and authenticated with the ri-scale workspace token.
+           proxyService = await server.getService('ri-scale/chat-proxy');
       } catch (e) {
-          console.warn(`Specific service ${selectedAgent.service_id} not found: ${e}`);
+           console.warn("Chat Proxy not found. Is the deploy_chat_proxy.py script running?");
+           throw new Error("Chat Service Proxy is offline. Please contact administrator.");
       }
-      
-      if (!serviceAvailable) {
-          // If specific service fails (because it's not a persistent service),
-          // Check if it's a "serverless" agent that needs to be invoked via artifact runner?
-          // Or mock it for now if "real" execution is too complex without hypha-agent lib.
-          
-          throw new Error("Agent is not currently running as a service. Please start the agent or use an active one.");
-      }
-      
-      // If we have a service, call chat
-      const response = await agentService.chat({
-          text: newMessage.content,
-          history: [], // Simplify history for now
-          context: apiKey ? { openai_api_key: apiKey } : undefined
-      });
+
+      // Call the proxy chat method
+      // chat(agent_id, message, history)
+      const response = await proxyService.chat(
+          selectedAgent.service_id || selectedAgent.id, // agent_id
+          newMessage.content, // message
+          [] // history (simplify for now)
+      );
 
       const responseText = typeof response === 'string' ? response : (response.text || JSON.stringify(response));
 
