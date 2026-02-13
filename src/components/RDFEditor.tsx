@@ -2,8 +2,6 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import Editor from '@monaco-editor/react';
 import { TextField, FormControl, Autocomplete, Chip } from '@mui/material';
 import yaml from 'js-yaml';
-import TagSelection from './TagSelection';
-import { tagCategories } from './TagSelection';
 
 // Add debounce function at the top of the file, before interfaces
 function debounce<T extends (...args: any[]) => any>(
@@ -120,7 +118,7 @@ const RDFEditor: React.FC<RDFEditorProps> = ({
   const [isLicenseOpen, setIsLicenseOpen] = useState(false);
 
   // Combine local and remote suggestions and remove duplicates
-  const tagSuggestions = Array.from(new Set([...Object.values(tagCategories).flat(), ...remoteSuggestions]));
+  const tagSuggestions = Array.from(new Set([...remoteSuggestions]));
 
   const sanitizeTag = (tag: string) => {
     // Convert to lowercase
@@ -596,17 +594,6 @@ const RDFEditor: React.FC<RDFEditorProps> = ({
                   ))
                 }
               />
-              <div>
-                <TagSelection 
-                  onTagSelect={(tag) => {
-                    const currentTags = formData.tags || [];
-                    const sanitizedTag = sanitizeTag(tag);
-                    if (!currentTags.includes(sanitizedTag)) {
-                      handleFormChange('tags', [...currentTags, sanitizedTag]);
-                    }
-                  }} 
-                />
-              </div>
             </div>
           </div>
         </div>
@@ -628,8 +615,12 @@ const RDFEditor: React.FC<RDFEditorProps> = ({
               size="small"
               label="Email"
               value={formData.uploader?.email || ''}
+              onChange={(e) => handleFormChange('uploader', {
+                ...formData.uploader,
+                email: e.target.value
+              })}
               required
-              helperText="Email of the uploader (automatically set)"
+              helperText="Email of the uploader (auto-filled, but editable)"
               className="bg-white rounded-md"
               InputProps={{
                 className: "rounded-md",

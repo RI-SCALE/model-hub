@@ -135,10 +135,24 @@ const MyArtifacts: React.FC = () => {
     try {
       setDeleteLoading(true);
 
-      await artifactManager.discard({
-        artifact_id: artifactToDelete.id,
-        _rkwargs: true
-      });
+      // Check if the artifact has any published versions
+      const hasPublishedVersions = artifactToDelete.versions && artifactToDelete.versions.length > 0;
+
+      if (hasPublishedVersions) {
+        // Artifact has published versions - only discard the staged changes
+        await artifactManager.discard({
+          artifact_id: artifactToDelete.id,
+          _rkwargs: true
+        });
+      } else {
+        // Artifact has no published versions - delete it entirely
+        await artifactManager.delete({
+          artifact_id: artifactToDelete.id,
+          delete_files: true,
+          recursive: true,
+          _rkwargs: true
+        });
+      }
       
       // Refresh the artifacts list
       loadArtifacts();
@@ -187,6 +201,8 @@ const MyArtifacts: React.FC = () => {
       console.error('Error requesting deletion:', err);
       setError('Failed to request deletion');
     } finally {
+      setIsRequestDeletionDialogOpen(false);
+      setArtifactToRequestDeletion(null);
       setDeletionRequestLoading(null);
     }
   };

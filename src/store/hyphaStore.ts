@@ -72,7 +72,7 @@ export const useHyphaStore = create<HyphaState>((set, get) => ({
   user: null,
   isInitialized: false,
   resources: [],
-  resourceType: 'model',
+  resourceType: null,
   resourceTypes: [],
   page: 1,
   itemsPerPage: 12,
@@ -96,8 +96,6 @@ export const useHyphaStore = create<HyphaState>((set, get) => ({
   setResources: (resources) => set({ resources }),
   setResourceType: (type) => {
     set({ resourceType: type });
-    // Automatically fetch resources when type changes
-    get().fetchResources(get().page);
   },
   setResourceTypes: (types) => {
     set((state) => ({
@@ -159,7 +157,7 @@ export const useHyphaStore = create<HyphaState>((set, get) => ({
       const offset = (page - 1) * get().itemsPerPage;
       
       // Construct the base URL
-      let url = `https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?pagination=true&offset=${offset}&limit=${get().itemsPerPage}&stage=false&order_by=manifest.score>`;
+      let url = `https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?pagination=true&offset=${offset}&limit=${get().itemsPerPage}&stage=false`;
       
       // Prepare filters object
       const filters: any = {};

@@ -4,11 +4,8 @@ import { useHyphaStore } from '../store/hyphaStore';
 import SearchBar from './SearchBar';
 import ArtifactCard from './ArtifactCard';
 import { Grid } from '@mui/material';
-import TagSelection from './TagSelection';
 
-interface ResourceGridProps {
-  type?: 'model';
-}
+interface ResourceGridProps {}
 
 const PHRASES = [
   "nucleus segmentation",
@@ -122,7 +119,7 @@ const LoadingOverlay = () => (
   </div>
 );
 
-export const ArtifactGrid: React.FC<ResourceGridProps> = ({ type }) => {
+const ArtifactGrid: React.FC<ResourceGridProps> = () => {
   const [loading, setLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
   const location = useLocation();
@@ -130,12 +127,12 @@ export const ArtifactGrid: React.FC<ResourceGridProps> = ({ type }) => {
     resources,
     setResourceType,
     fetchResources,
+    resourceType,
     totalItems,
     itemsPerPage
   } = useHyphaStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [serverSearchQuery, setServerSearchQuery] = useState('');
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [isTyping, setIsTyping] = useState(false);
   const [abortController, setAbortController] = useState<AbortController | null>(null);
 
@@ -176,14 +173,6 @@ export const ArtifactGrid: React.FC<ResourceGridProps> = ({ type }) => {
   }, [text, isDeleting, phraseIndex]);
 
   useEffect(() => {
-    // Force resource type to model
-    setResourceType('model');
-    // Reset to first page when artifact type changes
-    setCurrentPage(1);
-  }, [setResourceType]);
-
-
-  useEffect(() => {
     const loadResources = async () => {
       try {
         // Cancel any ongoing request
@@ -196,9 +185,7 @@ export const ArtifactGrid: React.FC<ResourceGridProps> = ({ type }) => {
         setAbortController(newAbortController);
 
         setLoading(true);
-        await fetchResources(currentPage, serverSearchQuery, {
-          tags: selectedTags
-        });
+        await fetchResources(currentPage, serverSearchQuery);
       } catch (error) {
         // Don't set loading to false if the request was aborted
         if (error instanceof Error && error.name === 'AbortError') {
@@ -212,7 +199,12 @@ export const ArtifactGrid: React.FC<ResourceGridProps> = ({ type }) => {
     };
 
     loadResources();
-  }, [location.pathname, currentPage, serverSearchQuery, selectedTags, fetchResources]);
+  }, [location.pathname, currentPage, serverSearchQuery, fetchResources, resourceType]);
+
+  // Set resource type to null on mount to ensure we see all artifacts
+  useEffect(() => {
+    setResourceType(null);
+  }, [setResourceType]);
 
   // Cleanup effect to cancel ongoing requests when component unmounts
   useEffect(() => {
@@ -262,16 +254,6 @@ export const ArtifactGrid: React.FC<ResourceGridProps> = ({ type }) => {
     setCurrentPage(1);
   };
 
-  const handleTagSelect = (tag: string) => {
-    setSelectedTags(prev => {
-      return [tag];
-    });
-    setSearchQuery(tag);
-    setIsTyping(false);
-    setServerSearchQuery(tag);
-    setCurrentPage(1);
-  };
-
   const totalPages = Math.ceil(totalItems / itemsPerPage);
 
   return (
@@ -304,16 +286,8 @@ export const ArtifactGrid: React.FC<ResourceGridProps> = ({ type }) => {
                   onSearchConfirm={handleSearchConfirm}
                 />
               </div>
-              <div className="flex-none w-full sm:w-auto">
-                <TagSelection 
-                  onTagSelect={handleTagSelect}
-                  selectedTags={selectedTags}
-                />
-              </div>
             </div>
           </div>
-
-        {/* Resources Grid */}
          {resources && resources.length > 0 ? (
           <Grid container spacing={3}>
             {resources.map((resource) => (
@@ -330,7 +304,6 @@ export const ArtifactGrid: React.FC<ResourceGridProps> = ({ type }) => {
                 onClick={() => {
                    setSearchQuery('');
                    setServerSearchQuery('');
-                   setSelectedTags([]);
                 }}
                 className="mt-4 text-ri-orange hover:text-ri-black underline transition-colors"
               >
@@ -349,6 +322,6 @@ export const ArtifactGrid: React.FC<ResourceGridProps> = ({ type }) => {
       </div>
     </div>
   );
-};
 
+};
 export default ArtifactGrid;

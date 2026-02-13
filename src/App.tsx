@@ -71,7 +71,7 @@ const AppContent: React.FC = () => {
           />
           <Route path="/agents" element={<AgentPage />} />
           <Route path="/partners" element={<PartnersPage />} />
-          <Route path="/models" element={<ArtifactGrid type="model" />} />
+          <Route path="/models" element={<ArtifactGrid />} />
           <Route path="/upload" element={<Upload />} />
           <Route path="/my-artifacts" element={<MyArtifacts />} />
           <Route path="/edit/:artifactId/:version?" element={<Edit />} />

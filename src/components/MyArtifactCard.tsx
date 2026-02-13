@@ -161,9 +161,9 @@ const MyArtifactCard: React.FC<AdminResourceCardProps> = ({
               <PencilIcon className="w-5 h-5" />
               <span className="ml-1">Edit</span>
             </button>
-            {isStaged && (
+            {isStaged ? (
               <>
-                {isCollectionAdmin && onDelete ? (
+                {(isCollectionAdmin && onDelete) || onDelete ? (
                   <button
                     onClick={(e) => handleClick(e, onDelete)}
                     className="flex items-center p-2 text-gray-600 hover:text-red-600 rounded-lg hover:bg-red-50"
@@ -194,6 +194,27 @@ const MyArtifactCard: React.FC<AdminResourceCardProps> = ({
                   </button>
                 )}
               </>
+            ) : (
+              onRequestDeletion && status !== 'deletion-requested' && (
+                <button
+                  onClick={(e) => handleClick(e, onRequestDeletion)}
+                  className="flex items-center p-2 text-gray-600 hover:text-red-600 rounded-lg hover:bg-red-50"
+                  title="Request Deletion"
+                  disabled={deletionRequestLoading}
+                >
+                  {deletionRequestLoading ? (
+                    <>
+                      <CircularProgress size={20} className="mr-2" />
+                      <span className="ml-1">Requesting...</span>
+                    </>
+                  ) : (
+                    <>
+                      <TrashIcon className="w-5 h-5" />
+                      <span className="ml-1">Delete</span>
+                    </>
+                  )}
+                </button>
+              )
             )}
           </div>
           

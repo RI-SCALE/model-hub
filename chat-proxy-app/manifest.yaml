@@ -1,10 +1,11 @@
 name: "RI-SCALE Chat Proxy"
 type: "web-python"
 description: "A secure proxy service for RI-SCALE agents that injects API keys"
-id: "chat-proxy"
+id: "chat-proxy-test"
 version: "0.1.0"
 runtime: "python:3.11"
-entry_point: "main.py"
+entry_point: "app.py"
+# singleton: true
 requirements:
   - requirements.txt
 config:

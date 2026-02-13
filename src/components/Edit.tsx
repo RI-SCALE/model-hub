@@ -66,6 +66,25 @@ interface ValidationResult {
   errors: string[];
 }
 
+// Helper function to determine MIME type
+const getMimeType = (filename: string): string => {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'html': return 'text/html';
+    case 'js': return 'application/javascript';
+    case 'css': return 'text/css';
+    case 'json': return 'application/json';
+    case 'png': return 'image/png';
+    case 'jpg': case 'jpeg': return 'image/jpeg';
+    case 'gif': return 'image/gif';
+    case 'svg': return 'image/svg+xml';
+    case 'txt': return 'text/plain';
+    case 'yaml': case 'yml': return 'application/x-yaml';
+    case 'md': return 'text/markdown';
+    default: return '';
+  }
+};
+
 const Edit: React.FC = () => {
   // get edit version from url
   const { version } = useParams<{ version: string }>();
@@ -658,7 +677,7 @@ const Edit: React.FC = () => {
               method: 'PUT',
               body: content,
               headers: {
-                'Content-Type': '' // important for s3
+                'Content-Type': 'application/x-yaml'
               }
             });
 
@@ -703,11 +722,12 @@ const Edit: React.FC = () => {
             _rkwargs: true
           });
 
+          const mimeType = getMimeType(file.name);
           const response = await fetch(presignedUrl, {
             method: 'PUT',
             body: unsavedChanges[file.path],
             headers: {
-              'Content-Type': '' // important for s3
+              'Content-Type': mimeType
             }
           });
 
@@ -778,31 +798,42 @@ const Edit: React.FC = () => {
         message: 'Publishing artifact...',
         severity: 'info'
       });
-      const artifact = await artifactManager?.commit({
+
+      // Get latest artifact info
+      const currentArtifact = await artifactManager?.read({
         artifact_id: artifactId,
-        comment: `Published by ${user?.email}`,
+        version: 'stage',
         _rkwargs: true
       });
 
       // add create_zip_file to download_weights
       const newConfig = {
-        ...artifact.config,
+        ...(currentArtifact.config || {}),
         download_weights:{
-          ...artifact.config.download_weights,
+          ...(currentArtifact.config?.download_weights || {}),
           create_zip_file: 1.0
         }
       };
 
       // update the manifest
       const newManifest = {
-        ...artifact.manifest,
+        ...(currentArtifact.manifest || {}),
         status: 'published'
       };
 
+      // Update the staged version first
       await artifactManager?.edit({
         artifact_id: artifactId,
         config: newConfig,
         manifest: newManifest,
+        stage: true,
+        _rkwargs: true
+      });
+
+      // Then commit the staged version
+      await artifactManager?.commit({
+        artifact_id: artifactId,
+        comment: `Published by ${user?.email}`,
         _rkwargs: true
       });
 
@@ -1031,6 +1062,21 @@ const Edit: React.FC = () => {
   // Update the navigation button
   const renderSidebarNav = () => (
     <>
+      {/* Show Publish button if in staging mode */}
+      {isStaged && (
+        <div className="p-4 border-b bg-white space-y-2">
+          <button
+            onClick={() => setShowPublishDialog(true)}
+            className="w-full flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors bg-[#f39200] text-white hover:bg-[#d98200] border border-transparent shadow-sm focus:ring-2 focus:ring-[#f39200] focus:ring-offset-2"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7H5a2 2 0 00-2 2v9a2 2 0 002 2h14a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+            </svg>
+            Publish Version
+          </button>
+        </div>
+      )}
+
       {/* Only show New Version button if not in staging mode */}
       {!isStaged && (
         <div className="p-4 border-b bg-white space-y-2">
@@ -1251,11 +1297,12 @@ const Edit: React.FC = () => {
         const presignedUrl = await artifactManager.put_file(putConfig);
 
         // Upload file content
+        const mimeType = getMimeType(file.name);
         const response = await fetch(presignedUrl, {
           method: 'PUT',
           body: file,
           headers: {
-            'Content-Type': '' // important for s3
+            'Content-Type': mimeType
           }
         });
 
@@ -1747,12 +1794,13 @@ const Edit: React.FC = () => {
                   _rkwargs: true
                 });
 
+                const mimeType = getMimeType(file.name);
                 // Upload the file to new version
                 const uploadResponse = await fetch(presignedUrl, {
                   method: 'PUT',
                   body: fileContent,
                   headers: {
-                    'Content-Type': '' // important for s3
+                    'Content-Type': mimeType
                   }
                 });
 
@@ -2257,7 +2305,9 @@ const Edit: React.FC = () => {
                     {artifactInfo.manifest.name}
                   </p>
                   <span className="text-xs bg-[#fff7ed] text-[#f39200] border border-orange-200 px-2 py-1 rounded-full">
-                    {isStaged ? 'stage' : (lastVersion || '')}
+                    {isStaged 
+                      ? ((artifactInfo?.manifest as any)?.status === 'published' ? 'Published (Staged)' : 'Stage') 
+                      : (lastVersion || '')}
                   </span>
                 </div>
                 <div className="text-xs text-gray-500 font-mono mt-2 flex items-center gap-1">

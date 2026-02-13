@@ -8,7 +8,6 @@ import { LinearProgress } from '@mui/material';
 import yaml from 'js-yaml';
 import { Link, useNavigate } from 'react-router-dom';
 import RDFEditor from './RDFEditor';
-import TermsOfService from './TermsOfService';
 import gridBg from '../assets/grid.svg';
 
 // Helper function to extract weight file paths from manifest
@@ -152,6 +151,24 @@ const readFileContent = (file: File): Promise<string | ArrayBuffer> => {
   });
 };
 
+const getMimeType = (filename: string): string => {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'html': return 'text/html';
+    case 'js': return 'application/javascript';
+    case 'css': return 'text/css';
+    case 'json': return 'application/json';
+    case 'png': return 'image/png';
+    case 'jpg': case 'jpeg': return 'image/jpeg';
+    case 'gif': return 'image/gif';
+    case 'svg': return 'image/svg+xml';
+    case 'txt': return 'text/plain';
+    case 'yaml': case 'yml': return 'application/x-yaml';
+    case 'md': return 'text/markdown';
+    default: return '';
+  }
+};
+
 const Upload: React.FC<UploadProps> = ({ artifactId }) => {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
@@ -169,7 +186,6 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
   const [generatedId, setGeneratedId] = useState<string | null>(null);
   const [generatedEmoji, setGeneratedEmoji] = useState<string | null>(null);
   const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
-  const [showingTos, setShowingTos] = useState(false);
 
   useEffect(() => {
     if (artifactId) {
@@ -288,7 +304,18 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
           };
 
           if (fileName === 'rdf.yaml') {
-            const content = await file.async('string');
+            let content = await file.async('string');
+            if (user?.email) {
+              try {
+                const manifest = yaml.load(content) as RdfManifest;
+                if (!manifest.uploader?.email) {
+                  manifest.uploader = { ...manifest.uploader, email: user.email };
+                  content = yaml.dump(manifest);
+                }
+              } catch (e) {
+                console.warn("Failed to inject email into rdf.yaml", e);
+              }
+            }
             fileNode.content = content;
             fileNode.loaded = true;
           }
@@ -373,7 +400,18 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         };
 
         if (fileName === 'rdf.yaml') {
-          const content = await readFileContent(file);
+          let content = await readFileContent(file);
+          if (user?.email && typeof content === 'string') {
+            try {
+              const manifest = yaml.load(content) as RdfManifest;
+              if (!manifest.uploader?.email) {
+                manifest.uploader = { ...manifest.uploader, email: user.email };
+                content = yaml.dump(manifest);
+              }
+            } catch (e) {
+              console.warn("Failed to inject email into rdf.yaml", e);
+            }
+          }
           fileNode.content = content;
           fileNode.loaded = true;
         }
@@ -587,25 +625,6 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
 
     try {
       setIsUploading(true);
-      setShowingTos(true);
-      setUploadStatus({
-        message: 'Please review and agree to our Terms of Service to continue',
-        severity: 'info'
-      });
-      return;
-    } catch (error) {
-      console.error('Upload failed:', error);
-      setUploadStatus({
-        message: error instanceof Error ? error.message : 'Unknown error occurred',
-        severity: 'error'
-      });
-      setIsUploading(false);
-    }
-  };
-
-  const handleAgreeAndUpload = async () => {
-    try {
-      setShowingTos(false);
       
       setUploadStatus({
         message: 'Reading manifest file...',
@@ -678,9 +697,6 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         alias: aliasPattern,
         type: manifest.type,
         manifest: manifest,
-        config: {
-          publish_to: "sandbox_zenodo"
-        },
         stage: true,
         _rkwargs: true,
         overwrite: true,
@@ -743,23 +759,6 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         progress: 0
       });
 
-      let rdfUploadPath = updatedRdfFile.path;
-      if (rdfUploadPath.includes('/')) {
-        rdfUploadPath = 'rdf.yaml';
-      }
-
-      const rdfPutUrl = await artifactManager.put_file({
-        artifact_id: artifact.id,
-        file_path: rdfUploadPath,
-        _rkwargs: true,
-      });
-
-      await axios.put(rdfPutUrl, updatedRdfFile.content, {
-        headers: {
-          "Content-Type": ""
-        }
-      });
-
       await artifactManager.edit({
         artifact_id: fullId,
         manifest: updatedManifest,
@@ -767,13 +766,12 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         _rkwargs: true
       });
 
-      const remainingFiles = updatedFiles.filter(file => !file.path.endsWith('rdf.yaml'));
-      for (let index = 0; index < remainingFiles.length; index++) {
-        const file = remainingFiles[index];
+      for (let index = 0; index < updatedFiles.length; index++) {
+        const file = updatedFiles[index];
         setUploadStatus({
           message: `Uploading ${file.name}...`,
           severity: 'info',
-          progress: ((index + 1) / (remainingFiles.length + 1)) * 100
+          progress: ((index + 1) / (updatedFiles.length + 1)) * 100
         });
 
         try {
@@ -829,20 +827,21 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
             putConfig.download_weight = 1;
           }
           const putUrl = await artifactManager.put_file(putConfig);
+          const mimeType = getMimeType(file.name);
 
           if (isLargeFile && fileObject) {
-            await uploadLargeFile(putUrl, fileObject, fileSize, (progress) => {
+            await uploadLargeFile(putUrl, fileObject, fileSize, mimeType, (progress) => {
               setUploadStatus({
                 message: `Uploading ${file.name}... (${Math.round(progress)}%)`,
                 severity: 'info',
-                progress: ((index + (progress / 100)) / remainingFiles.length) * 100
+                progress: ((index + (progress / 100)) / updatedFiles.length) * 100
               });
             });
           } else if (content) {
-            const blob = new Blob([content], { type: "application/octet-stream" });
+            const blob = new Blob([content], { type: mimeType || "application/octet-stream" });
             await axios.put(putUrl, blob, {
               headers: {
-                "Content-Type": ""
+                "Content-Type": mimeType
               },
               onUploadProgress: (progressEvent) => {
                 const progress = progressEvent.total
@@ -852,7 +851,7 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
                 setUploadStatus({
                   message: `Uploading ${file.name}...`,
                   severity: 'info',
-                  progress: ((index + (progress / 100)) / remainingFiles.length) * 100
+                  progress: ((index + (progress / 100)) / updatedFiles.length) * 100
                 });
               }
             });
@@ -945,12 +944,13 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
     url: string, 
     file: File, 
     fileSize: number,
+    mimeType: string,
     onProgress: (progress: number) => void
   ): Promise<void> => {
     try {
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', url, true);
-      xhr.setRequestHeader('Content-Type', '');
+      xhr.setRequestHeader('Content-Type', mimeType || '');
       
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable) {
@@ -1129,9 +1129,9 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
                     {!uploadedArtifact && (
                       <button
                         onClick={handleUpload}
-                        disabled={isUploading || !isLoggedIn || !isValidated}
+                        disabled={isUploading || !isLoggedIn}
                         className={`px-4 py-2 rounded-md font-bold text-sm transition-colors whitespace-nowrap flex items-center gap-2
-                          ${isUploading || !isLoggedIn || !isValidated
+                          ${isUploading || !isLoggedIn
                             ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                             : 'bg-[#f39200] text-white hover:bg-[#d98200]'}`}
                       >
@@ -1166,33 +1166,7 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
           )}
 
           <div className="flex-1 overflow-auto min-h-[calc(100vh-145px)] bg-white">
-            {showingTos ? (
-              <div className="relative p-6">
-                <div className="mb-8 border-b border-gray-200 pb-6">
-                    <h2 className="text-xl font-bold text-gray-900 mb-2">Terms of Service Agreement</h2>
-                    <p className="text-gray-500">Please review and accept the terms to proceed with your upload.</p>
-                </div>
-                
-                <div className="max-w-4xl mx-auto">
-                    <TermsOfService />
-                    
-                    <div className="flex justify-end gap-4 mt-8 pt-6 border-t border-gray-200 sticky bottom-0 bg-white p-4">
-                        <button
-                            onClick={() => setShowingTos(false)}
-                            className="px-6 py-2 border border-gray-300 rounded-md text-gray-700 font-medium hover:bg-gray-50 transition-colors"
-                        >
-                            Cancel
-                        </button>
-                        <button
-                            onClick={handleAgreeAndUpload}
-                            className="px-6 py-2 bg-[#f39200] text-white rounded-md font-bold hover:bg-[#d98200] transition-colors shadow-sm"
-                        >
-                            I Agree & Continue Upload
-                        </button>
-                    </div>
-                </div>
-              </div>
-            ) : showDragDrop ? (
+            {showDragDrop ? (
               <div className="h-full flex items-center justify-center p-8">
                 <div className="mt-10 text-center max-w-2xl mx-auto w-full">
                   {uploadStatus?.message && uploadStatus.severity === 'info' && uploadStatus.progress !== undefined ? (
@@ -1209,7 +1183,7 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
                   ) : (
                     <div 
                       {...getRootProps()} 
-                      onClick={handleFileButtonClick}
+                      onClick={handleFolderButtonClick}
                       className="border-2 border-dashed border-gray-300 rounded-xl p-16 hover:bg-gray-50 hover:border-[#f39200] transition-all cursor-pointer mb-8 group"
                     >
                       <input {...fileInputProps} ref={fileInputRef} />
@@ -1228,7 +1202,7 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
                             <p className="text-xl text-gray-900 font-bold mb-2">
                               Drag & drop your model package content here
                             </p>
-                            <p className="text-gray-500">or click to select files</p>
+                            <p className="text-gray-500">or click to select a folder</p>
                           </>
                         )}
                       </div>

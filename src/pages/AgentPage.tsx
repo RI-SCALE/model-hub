@@ -103,31 +103,16 @@ const AgentPage: React.FC = () => {
             agent.alias === targetAgentAlias || agent.id.includes(targetAgentAlias)
         );
 
-        // Fetch active services to check status
-        let activeServiceIds = new Set<string>();
-        try {
-            // listServices returns a list of service info objects
-            // We fetch all visible services to be safe
-            const services = await server.listServices();
-            if (Array.isArray(services)) {
-                 services.forEach((svc: any) => activeServiceIds.add(svc.id));
-            } else {
-                 console.warn("Unexpected format for services list:", services);
-            }
-        } catch (e) {
-            console.warn("AgentPage: Failed to list services, assuming offline", e);
-        }
-
+        // We assume all found agents are "online" (available to start via proxy)
         const mappedAgents: Agent[] = filteredAgents.map((art: any) => {
           const serviceId = art.alias ? `hypha-agents/${art.alias}` : undefined;
-          const isOnline = serviceId && activeServiceIds.has(serviceId);
           
           return {
             id: art.id, // Use full ID for connection
             name: art.manifest?.name || art.alias || 'Unnamed Agent',
             description: art.manifest?.description || 'No description provided.',
             icon: art.manifest?.icon,
-            status: isOnline ? 'online' : 'offline',
+            status: 'online', // Always available via Engine
             service_id: serviceId
           };
         });
