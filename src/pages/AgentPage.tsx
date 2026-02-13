@@ -133,15 +133,21 @@ const AgentPage: React.FC = () => {
         });
 
         setAgents(mappedAgents);
-        if (mappedAgents.length > 0 && !selectedAgent) {
-             // Prefer to select an online agent first
-             const firstOnline = mappedAgents.find(a => a.status === 'online');
-             setSelectedAgent(firstOnline || mappedAgents[0]);
+        setLoadingAgents(false);
+        
+        // Use a functional update or separate effect to set initial agent to avoid dependency loop
+        if (mappedAgents.length > 0) {
+            setSelectedAgent(prev => {
+                if (!prev) {
+                    const firstOnline = mappedAgents.find(a => a.status === 'online');
+                    return firstOnline || mappedAgents[0];
+                }
+                return prev;
+            });
         }
       } catch (err: any) {
         console.error("Error fetching agents:", err);
         setAgentError("Failed to load agents. Please check connection.");
-      } finally {
         setLoadingAgents(false);
       }
     };

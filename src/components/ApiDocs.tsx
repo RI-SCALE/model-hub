@@ -259,3 +259,5 @@ fetch(\`https://hypha.aicell.io/\${modelId}/files/\${filePath}\`)
     </div>
   );
 };
+
+export default ApiDocs;
