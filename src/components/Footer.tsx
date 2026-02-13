@@ -52,7 +52,7 @@ const Footer: React.FC = () => {
               className="h-8 w-auto"
             />
             <p className="text-[10px] text-white leading-snug max-w-[200px] text-left">
-              RI-SCALE is funded by the European Union Grant Agreement Number&nbsp;10188168
+              RI-SCALE is funded by the European Union, Grant Agreement Number&nbsp;10188168
             </p>
           </div>
 

@@ -29,6 +29,97 @@ const ApiDocs: React.FC = () => {
     }
   };
 
+  const getListModelsCode = (lang: string) => {
+    switch (lang) {
+      case 'python':
+        return `import requests
+
+# List first 10 models
+response = requests.get(
+    "https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children",
+    params={"limit": 10}
+)
+models = response.json()
+
+for model in models:
+    print(f"{model['alias']}: {model['manifest']['name']}")`;
+      case 'javascript':
+        return `// List first 10 models
+fetch("https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10")
+  .then(res => res.json())
+  .then(models => {
+    models.forEach(model => {
+      console.log(\`\${model.alias}: \${model.manifest.name}\`);
+    });
+  });`;
+      case 'curl':
+        return `curl "https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10"`;
+      default:
+        return '';
+    }
+  };
+
+  const getModelDetailsCode = (lang: string) => {
+    switch (lang) {
+      case 'python':
+        return `import requests
+
+# Get details for a specific model
+model_id = "ri-scale/artifacts/model-example999" # Example ID
+response = requests.get(f"https://hypha.aicell.io/{model_id}")
+details = response.json()
+
+print(details['manifest'])`;
+      case 'javascript':
+        return `const modelId = "ri-scale/artifacts/model-example999"; // Example ID
+
+fetch(\`https://hypha.aicell.io/\${modelId}\`)
+  .then(res => res.json())
+  .then(details => {
+    console.log(details.manifest);
+  });`;
+      case 'curl':
+        return `curl "https://hypha.aicell.io/ri-scale/artifacts/model-example999"`;
+      default:
+        return '';
+    }
+  };
+
+  const getDownloadFileCode = (lang: string) => {
+    switch (lang) {
+      case 'python':
+        return `import requests
+
+model_id = "ri-scale/artifacts/model-example999"
+file_path = "rdf.yaml"
+
+url = f"https://hypha.aicell.io/{model_id}/files/{file_path}"
+response = requests.get(url)
+
+if response.status_code == 200:
+    with open(file_path, 'wb') as f:
+        f.write(response.content)
+else:
+    print(f"File not found: {response.status_code}")`;
+      case 'javascript':
+        return `const modelId = "ri-scale/artifacts/model-example999";
+const filePath = "rdf.yaml";
+
+fetch(\`https://hypha.aicell.io/\${modelId}/files/\${filePath}\`)
+  .then(res => {
+    if (res.ok) return res.blob();
+    console.error("File download failed", res.status);
+  })
+  .then(blob => {
+    if (blob) console.log("File downloaded", blob.size);
+  });`;
+      case 'curl':
+        return `curl -O "https://hypha.aicell.io/ri-scale/artifacts/model-example999/files/rdf.yaml"`;
+      default:
+        return '';
+    }
+  };
+
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold text-gray-900 mb-6">API Documentation</h1>
@@ -125,26 +216,7 @@ const ApiDocs: React.FC = () => {
             style={vscDarkPlus}
             customStyle={{ margin: 0, borderRadius: 0, padding: '1.5rem' }}
           >
-            {activeTab === 'python' ? `import requests
-
-# List first 10 models
-response = requests.get(
-    "https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children",
-    params={"limit": 10}
-)
-models = response.json()
-
-for model in models:
-    print(f"{model['alias']}: {model['manifest']['name']}")` 
-            : activeTab === 'javascript' ? `// List first 10 models
-fetch("https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10")
-  .then(res => res.json())
-  .then(models => {
-    models.forEach(model => {
-      console.log(\`\${model.alias}: \${model.manifest.name}\`);
-    });
-  });`
-            : `curl "https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10"`}
+            {getListModelsCode(activeTab)}
           </SyntaxHighlighter>
         </div>
 
@@ -159,22 +231,7 @@ fetch("https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10
             style={vscDarkPlus}
             customStyle={{ margin: 0, borderRadius: 0, padding: '1.5rem' }}
           >
-            {activeTab === 'python' ? `import requests
-
-# Get details for a specific model
-model_id = "ri-scale/artifacts/affable-shark" # Example ID
-response = requests.get(f"https://hypha.aicell.io/{model_id}")
-details = response.json()
-
-print(details['manifest'])`
-            : activeTab === 'javascript' ? `const modelId = "ri-scale/artifacts/affable-shark"; // Example ID
-
-fetch(\`https://hypha.aicell.io/\${modelId}\`)
-  .then(res => res.json())
-  .then(details => {
-    console.log(details.manifest);
-  });`
-            : `curl "https://hypha.aicell.io/ri-scale/artifacts/affable-shark"`}
+            {getModelDetailsCode(activeTab)}
           </SyntaxHighlighter>
         </div>
 
@@ -189,26 +246,7 @@ fetch(\`https://hypha.aicell.io/\${modelId}\`)
             style={vscDarkPlus}
             customStyle={{ margin: 0, borderRadius: 0, padding: '1.5rem' }}
           >
-            {activeTab === 'python' ? `import requests
-
-model_id = "ri-scale/artifacts/affable-shark"
-file_path = "rdf.yaml"
-
-url = f"https://hypha.aicell.io/{model_id}/files/{file_path}"
-response = requests.get(url)
-
-with open(file_path, 'wb') as f:
-    f.write(response.content)`
-            : activeTab === 'javascript' ? `const modelId = "ri-scale/artifacts/affable-shark";
-const filePath = "rdf.yaml";
-
-fetch(\`https://hypha.aicell.io/\${modelId}/files/\${filePath}\`)
-  .then(res => res.blob())
-  .then(blob => {
-    // Handle file blob...
-    console.log("File downloaded", blob.size);
-  });`
-            : `curl -O "https://hypha.aicell.io/ri-scale/artifacts/affable-shark/files/rdf.yaml"`}
+            {getDownloadFileCode(activeTab)}
           </SyntaxHighlighter>
         </div>
       </div>
@@ -221,5 +259,3 @@ fetch(\`https://hypha.aicell.io/\${modelId}/files/\${filePath}\`)
     </div>
   );
 };
-
-export default ApiDocs;

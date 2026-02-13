@@ -128,6 +128,30 @@ const extractNounFromId = (id: string): string => {
   return noun;
 };
 
+const readFileContent = (file: File): Promise<string | ArrayBuffer> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    
+    reader.onload = (event) => {
+      if (event.target?.result) {
+        resolve(event.target.result);
+      } else {
+        reject(new Error('Failed to read file content'));
+      }
+    };
+    
+    reader.onerror = () => {
+      reject(reader.error || new Error('Unknown error reading file'));
+    };
+    
+    if (isKnownTextFile(file.name)) {
+      reader.readAsText(file);
+    } else {
+      reader.readAsArrayBuffer(file);
+    }
+  });
+};
+
 const Upload: React.FC<UploadProps> = ({ artifactId }) => {
   const [files, setFiles] = useState<FileNode[]>([]);
   const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
@@ -291,12 +315,16 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
       const rdfFile = fileNodes.find(file => file.path.endsWith('rdf.yaml'));
       if (rdfFile) {
         handleFileSelect(rdfFile);
+      } else {
+        setUploadStatus({
+            message: 'Warning: No rdf.yaml file found. This is required for RI-SCALE Model Hub models.',
+            severity: 'error'
+        });
       }
-
     } catch (error) {
-      console.error('Error reading zip file:', error);
+      console.error('Error processing zip file:', error);
       setUploadStatus({
-        message: 'Error reading zip file',
+        message: 'Error processing zip file',
         severity: 'error'
       });
     }
@@ -383,28 +411,6 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         severity: 'error'
       });
     }
-  };
-
-  const readFileContent = (file: File): Promise<string | ArrayBuffer> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => {
-        if (reader.result) {
-          resolve(reader.result);
-        } else {
-          reject(new Error('Failed to read file'));
-        }
-      };
-      reader.onerror = () => {
-        reject(reader.error);
-      };
-      
-      if (!isKnownTextFile(file.name)) {
-        reader.readAsArrayBuffer(file);
-      } else {
-        reader.readAsText(file);
-      }
-    });
   };
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
@@ -1276,7 +1282,7 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
                             src={imageUrl}
                             alt={selectedFile.name}
                             className="max-w-full max-h-[70vh] h-auto object-contain shadow-sm"
-                            onLoad={() => checkImageDimensions(imageUrl!, selectedFile.name)}
+                            onLoad={() => checkImageDimensions(imageUrl, selectedFile.name)}
                           />
                         ) : (
                            <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-200 border-t-[#f39200]"></div>
