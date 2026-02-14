@@ -61,6 +61,7 @@ const AgentPage: React.FC = () => {
   const [loadingAgents, setLoadingAgents] = useState(false);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const [agentReady, setAgentReady] = useState(false);
 
   // Initialize kernel if not ready
   useEffect(() => {
@@ -72,12 +73,14 @@ const AgentPage: React.FC = () => {
   // Load and start agent when selected
   useEffect(() => {
     const loadAgent = async () => {
-      if (!selectedAgent || !isKernelReady || !executeCode || !server) return;
+      // If we don't have what we need, ensure ready state is false
+      if (!selectedAgent || !isKernelReady || !executeCode || !server) {
+          setAgentReady(false);
+          return;
+      }
       
-      // If we already loaded this agent (simple check), maybe skip?
-      // For now, we'll try to load it every time it is selected if not "active" in our logic
-      // But we don't have a way to know if it's running inside the kernel yet easily.
-      // let's just assume single agent mode for now.
+      // Start loading
+      setAgentReady(false);
 
       try {
         console.log(`Loading agent ${selectedAgent.name}...`);
@@ -184,6 +187,8 @@ print("Installed hypha-rpc")
         // 4. Run the script
         await executeCode(scriptContent);
         console.log("Agent startup script executed.");
+        
+        setAgentReady(true);
 
         // 5. Connect to the service
         // We'll retry connecting to the service in the chat handler.
@@ -194,6 +199,7 @@ print("Installed hypha-rpc")
         // We'll retry connecting to the service in the chat handler.
 
       } catch (err: any) {
+        setAgentReady(false);
         console.error("Error loading agent:", err);
         const errorMsg = {
             id: Date.now().toString(),
@@ -666,21 +672,38 @@ asyncio.create_task(_chat_wrapper())
             </div>
 
             {/* Input Area */}
-            <div className="bg-white border-t border-gray-200 p-4">
-              <div className="max-w-4xl mx-auto relative flex items-end bg-white border border-gray-300 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-ri-orange focus-within:border-transparent transition-all">
+            <div className="bg-white border-t border-gray-200 p-4 relative">
+              {/* Optional overlay or tooltip if disabled */}
+              {(!isKernelReady || !agentReady) && selectedAgent && (
+                  <div className="absolute left-0 right-0 -top-8 flex justify-center pointer-events-none">
+                      <span className="bg-white/90 border border-gray-200 shadow-sm text-ri-orange text-xs px-3 py-1 rounded-full flex items-center animate-pulse">
+                          <FiZap className="mr-1.5 animate-spin-slow" size={10} />
+                          {!isKernelReady ? 'Initializing Python Kernel...' : 'Loading Agent Resources...'}
+                      </span>
+                  </div>
+              )}
+
+              <div className={`max-w-4xl mx-auto relative flex items-end bg-white border border-gray-300 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-ri-orange focus-within:border-transparent transition-all ${(!isKernelReady || !agentReady) ? 'opacity-60 bg-gray-50' : ''}`}>
                 <textarea
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyPress}
-                  placeholder="Type a message..."
-                  className="flex-1 max-h-40 min-h-[50px] w-full bg-transparent border-0 focus:ring-0 p-3 resize-none text-gray-800 placeholder-gray-400"
+                  disabled={!isKernelReady || !agentReady}
+                  placeholder={
+                    !isKernelReady 
+                    ? "Initializing Python Kernel..." 
+                    : !agentReady 
+                        ? "Loading Agent Resources..." 
+                        : "Type a message..."
+                  }
+                  className="flex-1 max-h-40 min-h-[50px] w-full bg-transparent border-0 focus:ring-0 p-3 resize-none text-gray-800 placeholder-gray-400 disabled:cursor-not-allowed"
                   rows={1}
                 />
                 <button
                   onClick={handleSendMessage}
-                  disabled={!input.trim() || isTyping}
+                  disabled={!input.trim() || isTyping || !isKernelReady || !agentReady}
                   className={`mb-2 mr-2 p-2 rounded-lg transition-colors ${
-                    input.trim() && !isTyping
+                    input.trim() && !isTyping && isKernelReady && agentReady
                       ? 'bg-ri-orange text-white hover:bg-orange-600'
                       : 'bg-gray-100 text-gray-300 cursor-not-allowed'
                   }`}
