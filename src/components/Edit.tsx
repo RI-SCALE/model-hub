@@ -262,9 +262,12 @@ const Edit: React.FC = () => {
         _rkwargs: true
       });
       console.log("DEBUG:", {artifact, editVersion})
-      if(!editVersion) {
+      // use local variable to ensure we have the correct version
+      let currentEditVersion = editVersion;
+      if(!currentEditVersion) {
         // get the last value of .versions
-        setEditVersion(artifact.versions[artifact.versions.length - 1].version);
+        currentEditVersion = artifact.versions[artifact.versions.length - 1].version;
+        setEditVersion(currentEditVersion);
       }
       
       // Set artifact type from manifest
@@ -293,7 +296,7 @@ const Edit: React.FC = () => {
       // List all files using the correct version
       const fileList = await artifactManager.list_files({
         artifact_id: artifactId || '',
-        version: isStaged ? 'stage' : 'latest', 
+        version: isStaged ? 'stage' : (currentEditVersion || 'latest'), 
         _rkwargs: true
       });
 
@@ -343,45 +346,121 @@ const Edit: React.FC = () => {
     }
   };
 
-  const fetchFileContent = async (file: FileNode) => {
+  const fetchFileContent = async (file: FileNode): Promise<string | ArrayBuffer | {fileSize: number, type: 'size-only'} | null | undefined> => {
     if (!artifactManager || file.isDirectory) return;
 
+    // Enhanced logging grouping
+    console.group(`fetchFileContent: ${file.name}`);
+    
     try {
       setUploadStatus({
         message: 'Loading file content...',
         severity: 'info'
       });
 
-      const url = await artifactManager.get_file({
-        artifact_id: artifactId || '',
-        file_path: file.path,
-        version: editVersion,
-        _rkwargs: true
-      });
+      // Determine version to fetch
+      let versionToFetch = isStaged ? 'stage' : (editVersion || 'latest');
       
+      if (!isStaged && (!editVersion || editVersion === 'latest') && artifactInfo?.versions && artifactInfo.versions.length > 0) {
+        versionToFetch = artifactInfo.versions[artifactInfo.versions.length - 1].version;
+      }
+
+      console.log('Artifact ID:', artifactId);
+      console.log('File Path:', file.path);
+      console.log('Version Strategy:', {
+        isStaged,
+        editVersion,
+        filesVersion: artifactInfo?.versions?.length ? artifactInfo.versions[artifactInfo.versions.length - 1].version : 'N/A',
+        finalVersionToFetch: versionToFetch
+      });
+
+      let url;
+      try {
+        url = await artifactManager.get_file({
+          artifact_id: artifactId || '',
+          file_path: file.path,
+          version: versionToFetch,
+          _rkwargs: true
+        });
+      } catch (error: any) {
+        console.warn(`Failed to get file URL with version ${versionToFetch}. Retrying with latest version.`, error);
+        // Fallback to latest version if staging/specific version fails (e.g., due to permission or missing file)
+        // This is useful if the user session expired or if the file exists only in the public version
+        if (versionToFetch === 'stage') {
+          try {
+            url = await artifactManager.get_file({
+              artifact_id: artifactId || '',
+              file_path: file.path,
+              version: 'latest', // or omit version to default to latest
+              _rkwargs: true
+            });
+            console.log('Fallback to latest version successful');
+          } catch (retryError) {
+             console.error('Retry failed:', retryError);
+             throw error; // Throw original error if retry also fails
+          }
+        } else {
+          throw error;
+        }
+      }
+      
+      console.log('Generated S3/Hypha URL:', url);
+
       // For text or image files, download the full content
       if (isTextFile(file.name) || isImageFile(file.name)) {
+        console.log('Fetching content (Text/Image)...');
         const response = await fetch(url);
+        
+        console.log('Response Status:', response.status);
+        console.log('Response Headers:', Object.fromEntries(response.headers.entries()));
+
+        if (response.status === 404) {
+          console.warn(`File ${file.name} not found (404) at version ${versionToFetch}`);
+          console.groupEnd();
+          // Return empty content for 404s to avoid breaking the UI
+          if (isTextFile(file.name)) return '';
+          return null;
+        }
+
+        if (!response.ok) {
+           const errorText = await response.text();
+           console.error('Fetch failed with body:', errorText);
+           console.groupEnd();
+           throw new Error(`Failed to fetch file: ${response.status} ${response.statusText} (version: ${versionToFetch})`);
+        }
+
         const content = isTextFile(file.name) ? 
           await response.text() : 
           await response.arrayBuffer();
+
+        console.log('Content fetched successfully. Length:', 
+            typeof content === 'string' ? content.length : (content as ArrayBuffer).byteLength);
 
         setUploadStatus({
           message: 'File loaded successfully',
           severity: 'success'
         });
-
+        
+        console.groupEnd();
         return content;
       } 
       // For unknown file types, just get the size using a HEAD request or Range request
       else {
-
+        console.log('Fetching info (Binary)...');
         // If HEAD request fails or doesn't return content-length, try a Range request
         const rangeResponse = await fetch(url, {
           headers: {
             Range: 'bytes=0-1' // Just get the first byte to determine file existence and size
           }
         });
+
+        console.log('Range Response Status:', rangeResponse.status);
+
+        if (rangeResponse.status === 404) {
+             console.warn(`File ${file.name} not found (404)`);
+             console.groupEnd();
+             return null;
+        }
         
         // Get content-range header which contains the file size
         const contentRange = rangeResponse.headers.get('content-range');
@@ -398,11 +477,14 @@ const Edit: React.FC = () => {
           size = parseInt(rangeResponse.headers.get('content-length')!, 10);
         }
         
+        console.log('File Size detected:', size);
+
         setUploadStatus({
           message: 'File info loaded successfully',
           severity: 'success'
         });
         
+        console.groupEnd();
         // Return a placeholder with size info
         return {
           fileSize: size,
@@ -411,6 +493,7 @@ const Edit: React.FC = () => {
       }
     } catch (error) {
       console.error('Error fetching file content:', error);
+      console.groupEnd();
       setUploadStatus({
         message: 'Error loading file content',
         severity: 'error'
@@ -441,7 +524,7 @@ const Edit: React.FC = () => {
     // Only fetch content if it hasn't been loaded yet
     if (!file.content) {
       const content = await fetchFileContent(file);
-      if (content) {
+      if (content !== undefined && content !== null) {
         // Create updated file with content
         const updatedFile = { ...file, content };
         
@@ -464,6 +547,24 @@ const Edit: React.FC = () => {
             console.error('Error generating image URL:', error);
           }
         }
+      } else if (content === null || content === '') {
+         // Handle 404 or empty content
+         // If it's a text file and returned empty string (404 handled), we treat it as empty file
+         if (content === '') {
+             const updatedFile = { ...file, content: '' };
+             setSelectedFile(updatedFile);
+             setFiles(prevFiles => 
+                prevFiles.map(f => 
+                    f.path === file.path ? updatedFile : f
+                )
+             );
+         } else {
+             // Null means 404 for binary or error
+             setUploadStatus({
+                message: `File ${file.name} could not be loaded (404)`,
+                severity: 'error'
+             });
+         }
       }
     } else if (isImageFile(file.name) && (typeof file.content === 'string' || file.content instanceof ArrayBuffer)) {
       // If content is already loaded and it's an image, just generate the image URL
@@ -799,25 +900,33 @@ const Edit: React.FC = () => {
         severity: 'info'
       });
 
-      // Get latest artifact info
-      const currentArtifact = await artifactManager?.read({
-        artifact_id: artifactId,
-        version: 'stage',
-        _rkwargs: true
-      });
+      // Use local artifact state to ensure we have the latest changes
+      // If artifactInfo is not available (shouldn't happen), fallback to reading from server
+      let currentManifest = artifactInfo?.manifest;
+      let currentConfig = artifactInfo?.config;
+      
+      if (!currentManifest) {
+         const currentArtifact = await artifactManager?.read({
+          artifact_id: artifactId,
+          version: 'stage',
+          _rkwargs: true
+        });
+        currentManifest = currentArtifact.manifest;
+        currentConfig = currentArtifact.config;
+      }
 
       // add create_zip_file to download_weights
       const newConfig = {
-        ...(currentArtifact.config || {}),
+        ...(currentConfig || {}),
         download_weights:{
-          ...(currentArtifact.config?.download_weights || {}),
+          ...(currentConfig?.download_weights || {}),
           create_zip_file: 1.0
         }
       };
 
       // update the manifest
       const newManifest = {
-        ...(currentArtifact.manifest || {}),
+        ...(currentManifest || {}),
         status: 'published'
       };
 
@@ -841,6 +950,9 @@ const Edit: React.FC = () => {
         message: 'Changes committed successfully',
         severity: 'success'
       });
+      
+      // Add a delay to allow changes to propagate
+      await new Promise(resolve => setTimeout(resolve, 2000));
       
       setShowPublishDialog(false);
       
@@ -1199,7 +1311,7 @@ const Edit: React.FC = () => {
         }
       }
     }
-  }, [artifactId, files, searchParams]); // Remove selectedFile from dependencies
+  }, [artifactId, files, searchParams, editVersion]); // Remove selectedFile from dependencies
 
   // Add this effect to handle tab state when staged status changes
   useEffect(() => {

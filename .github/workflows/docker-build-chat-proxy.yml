@@ -2,10 +2,10 @@ name: Build and Push Chat Proxy
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
     paths:
-      - 'chat-proxy-app/**'
-      - '.github/workflows/docker-build-chat-proxy.yml'
+      - "chat-proxy-app/**"
+      - ".github/workflows/docker-build-chat-proxy.yml"
   workflow_dispatch:
 
 env:

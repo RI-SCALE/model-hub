@@ -257,6 +257,127 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
     return languageMap[extension] || 'plaintext';
   };
 
+  const getCommonPrefix = (nodes: FileNode[]): string => {
+    if (nodes.length === 0) return '';
+    const firstPath = nodes[0].path;
+    const parts = firstPath.split('/');
+    
+    // If the first file is at root, there is no common directory prefix
+    if (parts.length === 1) return '';
+    
+    const prefix = parts[0];
+    for (let i = 1; i < nodes.length; i++) {
+      if (!nodes[i].path.startsWith(prefix + '/')) {
+        return '';
+      }
+    }
+    return prefix;
+  };
+
+  const ensureStaticSiteConfig = async (nodes: FileNode[]) => {
+    const commonPrefix = getCommonPrefix(nodes);
+    const expectedIndexPath = commonPrefix ? `${commonPrefix}/index.html` : 'index.html';
+    const indexFile = nodes.find(file => file.path === expectedIndexPath);
+
+    if (!indexFile) return nodes;
+
+    let rdfFile = nodes.find(file => file.path.endsWith('rdf.yaml'));
+    
+    const relativeHtmlFiles = nodes
+      .filter(f => f.name.endsWith('.html'))
+      .map(f => {
+        let p = f.path;
+        if (commonPrefix && p.startsWith(commonPrefix + '/')) {
+          p = p.substring(commonPrefix.length + 1);
+        }
+        return p;
+      });
+
+    const viewConfig = {
+      root_directory: '.',
+      templates: relativeHtmlFiles,
+      template_engine: 'jinja2',
+      use_builtin_template: false,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "max-age=3600"
+      }
+    };
+
+    if (rdfFile) {
+      if (!rdfFile.loaded) {
+        try {
+           const content = await loadFileContent(rdfFile);
+           if (!content) return nodes;
+        } catch (e) {
+           console.warn("Failed to load rdf.yaml for static config update", e);
+           return nodes;
+        }
+      }
+
+      // Re-find the file object as it might have been updated by loadFileContent (state update is async/detached here)
+      // Actually loadFileContent updates state but returns content directly.
+      // But we are operating on 'nodes' array passed in.
+      const content = rdfFile.content || await loadFileContent(rdfFile);
+
+      if (content) {
+        try {
+          const contentStr = typeof content === 'string' 
+            ? content 
+            : new TextDecoder().decode(content);
+            
+          const manifest = yaml.load(contentStr) as RdfManifest;
+          
+          if (!manifest.config) manifest.config = {};
+          
+          if (!manifest.config.view_config) {
+            manifest.config.view_config = viewConfig;
+            
+            if (!manifest.tags) manifest.tags = [];
+            if (!manifest.tags.includes('static-site')) manifest.tags.push('static-site');
+            
+            const newContent = yaml.dump(manifest);
+            
+            return nodes.map(f => f.path === rdfFile!.path ? { 
+               ...f, 
+               content: newContent,
+               edited: true,
+               loaded: true
+             } : f);
+          }
+        } catch (e) {
+          console.warn("Failed to update manifest with static site config", e);
+        }
+      }
+    } else {
+      const name = commonPrefix || 'New Application';
+      
+      const manifestContent = yaml.dump({
+        type: 'application',
+        name: name,
+        description: 'Static web application automatically generated.',
+        tags: ['static-site'],
+        config: {
+          view_config: viewConfig
+        }
+      });
+
+      const newRdfFile: FileNode = {
+        name: 'rdf.yaml',
+        path: commonPrefix ? `${commonPrefix}/rdf.yaml` : 'rdf.yaml',
+        content: manifestContent,
+        isDirectory: false,
+        size: manifestContent.length,
+        loaded: true,
+        edited: true
+      };
+
+      return [...nodes, newRdfFile];
+    }
+    
+    return nodes;
+  };
+
   const onDrop = useCallback(async (acceptedFiles: File[]) => {
     const isZipFile = acceptedFiles.length === 1 && acceptedFiles[0].name.toLowerCase().endsWith('.zip');
     if (isZipFile) {
@@ -331,7 +452,11 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         }
       }
 
-      setFiles(fileNodes);
+      
+      // Check for or create rdf.yaml for static sites
+      const updatedFiles = await ensureStaticSiteConfig(fileNodes);
+
+      setFiles(updatedFiles);
       setShowDragDrop(false);
       setUploadStatus({
         message: `Successfully loaded ${totalFiles} files`,
@@ -339,7 +464,7 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         progress: 100
       });
       
-      const rdfFile = fileNodes.find(file => file.path.endsWith('rdf.yaml'));
+      const rdfFile = updatedFiles.find(file => file.path.endsWith('rdf.yaml'));
       if (rdfFile) {
         handleFileSelect(rdfFile);
       } else {
@@ -425,15 +550,19 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         });
       }
 
-      setFiles(fileNodes);
+      // Check for or create rdf.yaml for static sites
+      const updatedFiles = await ensureStaticSiteConfig(fileNodes);
+
+      setFiles(updatedFiles);
       setShowDragDrop(false);
       setUploadStatus({
-        message: `Successfully loaded ${totalFiles} files`,
+        message: `Successfully loaded ${updatedFiles.length} files`,
         severity: 'info',
         progress: 100
       });
       
-      const rdfFile = fileNodes.find(file => file.path.endsWith('rdf.yaml'));
+      const rdfFile = updatedFiles.find(file => file.path.endsWith('rdf.yaml'));
+      
       if (rdfFile) {
         handleFileSelect(rdfFile);
       } else {
@@ -532,6 +661,43 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         ));
 
         return content;
+      } else if (artifactId) {
+        // Fetch from server for existing artifacts
+        try {
+          if (!artifactManager) throw new Error("Artifact manager not initialized");
+
+          setUploadStatus({
+            message: `Downloading ${file.name}...`,
+            severity: 'info'
+          });
+
+          // Use get_file to obtain the correct download URL
+          // This handles versioning and authentication correctly
+          const url = await artifactManager.get_file({
+            artifact_id: artifactId,
+            file_path: file.path,
+            _rkwargs: true
+          });
+
+          const isBinary = !isKnownTextFile(file.name);
+          const response = await axios.get(url, {
+            responseType: isBinary ? 'arraybuffer' : 'text'
+          });
+          
+          const content = response.data;
+          
+          setFiles(prevFiles => prevFiles.map(f => 
+            f.path === file.path 
+              ? { ...f, content, loaded: true }
+              : f
+          ));
+
+          setUploadStatus(null);
+          return content;
+        } catch (error) {
+          console.error(`Failed to download file ${file.path}:`, error);
+          throw error;
+        }
       }
       
       return null;
@@ -692,11 +858,17 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
           aliasPattern = '{object_adjective}-{object}';
       }
 
+      // Extract config from manifest if present, as it needs to be passed separately
+      const artifactConfig = manifest.config;
+      // We don't remove it from manifest to keep a record, or we could remove it.
+      // Usually it's better to keep it in manifest for reproducibility, but the server uses the separate config arg.
+
       const artifact = await artifactManager.create({
         parent_id: "ri-scale/ai-model-hub",
         alias: aliasPattern,
         type: manifest.type,
         manifest: manifest,
+        config: artifactConfig,
         stage: true,
         _rkwargs: true,
         overwrite: true,
@@ -711,7 +883,7 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         artifact_id: 'ri-scale/ai-model-hub',
         _rkwargs: true
       });
-      const emoji = findEmoji(collection.config, manifest.type, noun);
+      const emoji = manifest.id_emoji || findEmoji(collection.config, manifest.type, noun);
       setGeneratedEmoji(emoji);
 
       const updatedManifest = {
@@ -766,6 +938,8 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
         _rkwargs: true
       });
 
+      const commonPrefix = getCommonPrefix(updatedFiles);
+
       for (let index = 0; index < updatedFiles.length; index++) {
         const file = updatedFiles[index];
         setUploadStatus({
@@ -809,8 +983,8 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
           });
           
           let uploadPath = file.path;
-          if (uploadPath.includes('/')) {
-            uploadPath = file.name;
+          if (commonPrefix && uploadPath.startsWith(commonPrefix + '/')) {
+            uploadPath = uploadPath.substring(commonPrefix.length + 1);
           }
           
           const putConfig: {

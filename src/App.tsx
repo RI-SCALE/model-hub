@@ -18,6 +18,7 @@ import { HyphaProvider } from './HyphaContext';
 import ApiDocs from './components/ApiDocs';
 import Docs from './components/Docs';
 import TermsOfService from './components/TermsOfService';
+import { KernelProvider } from './hooks/useKernel';
 
 // Add a utility function to check if footer should be hidden
 const shouldHideFooter = (pathname: string): boolean => {
@@ -85,15 +86,16 @@ const AppContent: React.FC = () => {
   );
 };
 
-// Main App component that provides Router context
 const App: React.FC = () => {
-  return (
-    <HyphaProvider>
-      <HashRouter>
-        <AppContent />
-      </HashRouter>
-    </HyphaProvider>
-  );
+    return (
+        <HyphaProvider>
+            <KernelProvider>
+                <HashRouter>
+                    <AppContent />
+                </HashRouter>
+            </KernelProvider>
+        </HyphaProvider>
+    );
 };
 
 export default App;
