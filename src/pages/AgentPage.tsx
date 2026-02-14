@@ -102,6 +102,8 @@ const AgentPage: React.FC = () => {
         // We look for a requirements.txt file to install extra dependencies
         // Also check manifest for dependencies?
         const reqFile = files.find((f: any) => f.name === 'requirements.txt');
+        let packages: string[] = ["hypha-rpc", "openai"]; // Always install hypha-rpc and openai
+
         if (reqFile) {
             console.log("Installing dependencies from requirements.txt...");
             const reqUrl = await am.get_file(selectedAgent.id, reqFile.name);
@@ -109,13 +111,15 @@ const AgentPage: React.FC = () => {
             const reqText = await reqResponse.text();
             
             // Clean up requirements (remove comments, empty lines)
-            const packages = reqText.split('\n')
+            const extraPackages = reqText.split('\n')
                 .map(line => line.trim())
                 .filter(line => line && !line.startsWith('#'));
-                
-            if (packages.length > 0) {
-                const packagesJson = JSON.stringify(packages);
-                const installCode = `
+            packages = [...packages, ...extraPackages];
+        }
+
+        if (packages.length > 0) {
+            const packagesJson = JSON.stringify(packages);
+            const installCode = `
 import micropip
 import json
 try:
@@ -125,19 +129,8 @@ try:
     print("Dependencies installed successfully.")
 except Exception as e:
     print(f"Error installing dependencies: {e}")
-                `;
-                await executeCode(installCode);
-            }
-        } else {
-            // Default install
-            await executeCode(`
-import micropip
-try:
-    await micropip.install("hypha-rpc")
-except:
-    pass
-print("Installed hypha-rpc")
-`);
+            `;
+            await executeCode(installCode);
         }
 
         // 3. Get startup script
@@ -263,9 +256,13 @@ print("Installed hypha-rpc")
         console.log("AgentPage: Agents found:", initialAgents);
 
         // Filter to only show the specific requested agent
-        const targetAgentAlias = 'leisure-scrimmage-disliked-more';
+        const targetAgentAlias = 'dotted-acreage-slip-honestly';
         const filteredAgents = initialAgents.filter((agent: any) => 
-            agent.alias === targetAgentAlias || agent.id.includes(targetAgentAlias)
+            agent.alias === targetAgentAlias || 
+            agent.id.includes(targetAgentAlias) ||
+            // Also matching the "Euro-BioImaging Finder" if user searches for it?
+            // The user said "Make this work with dotted-acreage-slip-honestly"
+            (agent.alias && agent.alias.includes('leisure-scrimmage'))
         );
 
         // We assume all found agents are "online" (available to start via proxy)
@@ -338,6 +335,19 @@ print("Installed hypha-rpc")
 
     try {
 
+    try {
+      
+      // Get OpenAI Key from chat-proxy
+      let apiKey = "";
+      try {
+          const proxy = await server.getService("ri-scale/chat-proxy");
+          const tokenData = await proxy.get_openai_token();
+          apiKey = tokenData.access_token || tokenData.client_secret?.value;
+      } catch (e) {
+          console.error("Failed to get OpenAI key from proxy:", e);
+          // Fallback or error?
+      }
+
       try {
         const pythonResponse = await new Promise<string>(async (resolve, reject) => {
             const code = `
@@ -345,6 +355,8 @@ import asyncio
 import js
 import json
 import traceback
+import inspect
+from openai import AsyncOpenAI
 
 # Helper to send response safely
 def send_response(data):
@@ -352,75 +364,109 @@ def send_response(data):
 
 async def _chat_wrapper():
     try:
-        # Load message safely to avoid quote escaping issues
         user_msg = json.loads('''${JSON.stringify(newMessage.content).replace(/'''/g, "\\'\\'\\'")}''')
+        api_key = "${apiKey}"
         
-        # Try to find a way to invoke the agent
-        # 1. Check for 'agent' object with 'chat' method (Hypha Agent pattern)
-        if 'agent' in globals() and hasattr(agent, 'chat'):
-            # The agent might be an async generator or simple async function
-            response = await agent.chat(user_msg, history=[])
-            
-            # Handle generator response (stream) vs single response
-            # For now assume single response
-            if hasattr(response, '__aiter__'):
-                 # It's a generator, collect it? Or send first chunk?
-                 # Let's collect for now
-                 full_text = ""
-                 async for chunk in response:
-                     if isinstance(chunk, dict) and 'content' in chunk:
-                         full_text += chunk['content']
-                     elif isinstance(chunk, str):
-                         full_text += chunk
-                 send_response({"text": full_text})
-            else:
-                 send_response(response)
-                 
-        # 2. Check for simple 'chat' function
-        elif 'chat' in globals() and callable(chat):
-            response = await chat(user_msg, history=[])
-            send_response(response)
-            
-        # 3. Fallback: Check for 'fulltext_search' (Euro-BioImaging Finder pattern)
-        # If the agent defines tools but no chat loop, we use the tools directly.
-        elif 'fulltext_search' in globals() and callable(fulltext_search):
-            print("Using fallback fulltext_search chat handler")
-            query = user_msg if isinstance(user_msg, str) else user_msg.get('text', str(user_msg))
-            
-            # Simple keyword search
-            try:
-                # The script defines fulltext_search(query, k=5)
-                results = fulltext_search(query, k=5)
-                
-                if not results:
-                     send_response({"text": f"No results found for '{query}'."})
-                else:
-                     formatted = f"Found {len(results)} results for '**{query}**':\\n\\n"
-                     for r in results:
-                          # Create a markdown link if url exists, else bold name
-                          name = r.get('name', 'Unknown')
-                          url = r.get('url')
-                          type_ = r.get('type', 'resource')
-                          desc = r.get('description', 'No description.')
-                          
-                          if url:
-                              formatted += f"### [{name}]({url}) ({type_})\\n"
-                          else:
-                              formatted += f"### {name} ({type_})\\n"
-                          
-                          formatted += f"{desc}\\n\\n"
-                          
-                          # Add extra fields if relevant
-                          if 'country' in r:
-                              formatted += f"*Location: {r['country'].get('name')}*\\n\\n"
-                     
-                     send_response({"text": formatted})
-            except Exception as e:
-                 send_response({"text": f"Error running search: {e}"})
+        if not api_key:
+            send_response({"text": "Error: API Key not found. Please ensure chat-proxy is running."})
+            return
 
-        else:
-            send_response({"text": "Error: configured agent structure not found (no 'agent.chat' or 'chat' function)."})
+        client = AsyncOpenAI(api_key=api_key)
+        
+        # Discover tools
+        tools = []
+        available_functions = {}
+        
+        # Basic filtering for user-defined functions
+        # We assume functions without underscores are 'public' tools
+        for name, func in globals().items():
+            if callable(func) and not name.startswith('_') and name not in ['send_response', '_chat_wrapper', 'exit', 'quit', 'get_ipython', 'open', 'print', 'help']:
+                # Inspect docstring for description
+                doc = inspect.getdoc(func) or "No description provided."
+                
+                # Inspect signature for parameters
+                sig = inspect.signature(func)
+                params_schema = {"type": "object", "properties": {}, "required": []}
+                
+                for param_name, param in sig.parameters.items():
+                    param_type = "string" # Default
+                    if param.annotation != inspect.Parameter.empty:
+                        if param.annotation == int: param_type = "integer"
+                        elif param.annotation == float: param_type = "number"
+                        elif param.annotation == bool: param_type = "boolean"
+                        
+                    params_schema["properties"][param_name] = {"type": param_type}
+                    if param.default == inspect.Parameter.empty:
+                        params_schema["required"].append(param_name)
+                        
+                tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": doc,
+                        "parameters": params_schema
+                    }
+                })
+                available_functions[name] = func
+        
+        print(f"Discovered {len(tools)} tools: {[t['function']['name'] for t in tools]}")
+
+        messages = [{"role": "user", "content": user_msg}]
+        
+        # First call
+        response = await client.chat.completions.create(
+            model="gpt-4-turbo-preview", # Or gpt-3.5-turbo
+            messages=messages,
+            tools=tools if tools else None,
+            tool_choice="auto" if tools else None
+        )
+        
+        response_message = response.choices[0].message
+        tool_calls = response_message.tool_calls
+        
+        if tool_calls:
+            # Append assistant's response (tool call request)
+            messages.append(response_message)
             
+            for tool_call in tool_calls:
+                function_name = tool_call.function.name
+                function_to_call = available_functions.get(function_name)
+                function_args = json.loads(tool_call.function.arguments)
+                
+                if function_to_call:
+                    print(f"Calling tool: {function_name}({function_args})")
+                    try:
+                        # Call the function (could be async or sync)
+                        if inspect.iscoroutinefunction(function_to_call):
+                            function_response = await function_to_call(**function_args)
+                        else:
+                            function_response = function_to_call(**function_args)
+                            
+                        messages.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": str(function_response),
+                        })
+                    except Exception as e:
+                        messages.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": f"Error: {str(e)}",
+                        })
+            
+            # Second call to get final response
+            second_response = await client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=messages
+            )
+            final_content = second_response.choices[0].message.content
+            send_response({"text": final_content})
+            
+        else:
+            send_response({"text": response_message.content})
+
     except Exception as e:
         traceback.print_exc()
         send_response({"text": f"Error executing chat: {str(e)}"})
@@ -478,6 +524,10 @@ asyncio.create_task(_chat_wrapper())
           };
           setMessages(prev => [...prev, errorResponse]);
       }
+
+    } catch (e: any) {
+         console.error("Error in chat logic:", e);
+    }
 
     } catch (error: any) {
       console.error("Error sending message:", error);
