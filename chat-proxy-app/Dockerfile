@@ -21,4 +21,4 @@ RUN useradd -r -u 1000 appuser && chown -R appuser /app
 USER 1000
 
 # Run the entrypoint
-CMD ["python", "entrypoint.py"]
+CMD ["python", "app.py"]
