@@ -47,6 +47,8 @@
     "build": "react-scripts build && npm run copy-docs",
     "copy-docs": "node scripts/copy-docs.js",
     "test": "react-scripts test",
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
@@ -68,6 +70,7 @@
     ]
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@tailwindcss/forms": "^0.5.10",
     "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.2.0",
@@ -80,10 +83,5 @@
     "autoprefixer": "^10.0.0",
     "postcss": "^8.0.0",
     "typescript": "^5.9.3"
-  },
-  "jest": {
-    "setupFilesAfterEnv": [
-      "<rootDir>/src/jest.setup.ts"
-    ]
   }
 }

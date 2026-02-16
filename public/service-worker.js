@@ -60,7 +60,12 @@ self.addEventListener('activate', (event) => {
 // Don't intercept any fetch requests - just pass them through
 self.addEventListener('fetch', (event) => {
   // Simply pass through all requests to the network
-  event.respondWith(fetch(event.request));
+  event.respondWith(
+    fetch(event.request).catch((error) => {
+      console.warn('RI-SCALE Model Hub: Network fetch failed in cleanup service worker:', error);
+      return new Response('', { status: 503, statusText: 'Service Unavailable' });
+    })
+  );
 });
 
 // Listen for messages from the main thread

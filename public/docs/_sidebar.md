@@ -1,1 +1,5 @@
 * [Welcome](README.md)
+* [Agents Overview](README.md#agents-what-they-do)
+* [Agent Architecture](README.md#agents-how-they-work-developer-view)
+* [Deploy Chat Proxy](README.md#deploying-chat-proxy-developer)
+* [Troubleshooting](README.md#troubleshooting-agents)

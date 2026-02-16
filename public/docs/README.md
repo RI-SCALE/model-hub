@@ -1,80 +1,100 @@
 # RI-SCALE Model Hub User Guide
 
-The **RI-SCALE Model Hub** is a centralized platform designed to facilitate the sharing, discovery, and utilization of standardized AI models across research infrastructures. It serves as a comprehensive resource for researchers in the field of AI and machine learning.
+The **RI-SCALE Model Hub** helps researchers discover, share, and reuse AI models. It also provides an **Agents** experience where domain-specific assistants can answer user questions by combining tool calls with LLM reasoning.
 
-## Key Features
+## Core Features
 
-1.  **Model Discovery**: Search and retrieve open-source models tailored for various research tasks.
-2.  **Model Management**: Upload, version, and share your own models with the community.
-3.  **AI Agents**: Interact with specialized AI agents to navigate services and resources.
+1. **Model Discovery**: Search and browse standardized models.
+2. **Model Uploading**: Contribute and version your own models.
+3. **Agent Chat**: Use specialized assistants (for example, Euro-BioImaging Finder).
 
 ---
 
 ## Browsing Models
 
-*   **Search**: Utilize the search bar on the home page to locate models by name, tags, description, or author.
-*   **Filter**: Narrow down results using specific tags such as task (e.g., *segmentation*, *restoration*) or imaging modality.
-*   **Model Details**: Click on any model card to access comprehensive information, including:
-    *   **Overview**: Description, authors, and license.
-    *   **History**: Version control and update logs.
-    *   **Citations**: Academic references and credit.
-    *   **Files**: Direct download links for model weights and configuration files.
+- **Search**: Find models by name, description, author, or keywords.
+- **Filter**: Narrow by tags (task, modality, etc.).
+- **Details**: Open a model card to inspect metadata, files, citations, and history.
 
-## Uploading a Model
+## Uploading Models
 
-Contribution to the hub is streamlined:
-1.  Navigate to the **Upload** section via the navigation bar.
-2.  **Authenticate** using your designated credentials (via Hypha).
-3.  Complete the model metadata form:
-    *   **Name**: Provide a clear, descriptive title.
-    *   **Description**: elaborate on the model's purpose, architecture, and intended use cases.
-    *   **Tags**: Select relevant keywords to enhance discoverability.
-    *   **Files**: Drag and drop your model weights, configuration files, and sample data.
-4.  **Submit**: Once processed, your model becomes immediately available to the community.
+1. Go to **Upload**.
+2. Authenticate via Hypha.
+3. Upload model files and `rdf.yaml`.
+4. Review and complete metadata (name, description, tags).
+5. Submit to publish.
 
 ---
 
-## AI Agents
+## Agents: What They Do
 
-The RI-SCALE Model Hub features advanced AI agents to assist you. One of our primary agents is the **Euro-BioImaging Finder**.
+Agents help users by turning natural-language questions into tool-assisted responses.
 
-### Euro-BioImaging Finder
+### Example Agent
 
-This agent (`hypha-agents/leisure-scrimmage-disliked-more`) is an AI assistant specialized in helping users discover imaging technologies, instruments, and services provided by the Euro-BioImaging network.
+- **Euro-BioImaging Finder**
+- Typical focus: imaging services, technologies, and nodes.
 
-#### Capabilities
+### Typical Capabilities
 
-The agent has access to a live index of Euro-BioImaging resources and can perform:
+- Geographic lookup (e.g., facilities in a country)
+- Technology lookup (e.g., specific microscopy technique)
+- Guided discovery with links/details from indexed resources
 
-*   **Geographic Queries**: Find facilities and nodes in specific countries (e.g., *"What imaging facilities are available in Germany?"*).
-*   **Technology Queries**: Locate specific imaging techniques (e.g., *"Where can I access super-resolution microscopy?"*).
-*   **General Assistance**: Guide users on how to access services and apply for resources.
+---
 
-#### Agent Instructions & Logic
+## Agents: How They Work (Developer View)
 
-To understand how the agent works, here is an overview of its internal instructions and the tools it uses to generate answers.
+The RI-SCALE agent stack is intentionally simple:
 
-**System Role:**
-> You are an AI assistant specialized in helping users discover imaging technologies, instruments, and services provided by the Euro-BioImaging network.
+1. **Frontend** (`src/pages/AgentPage.tsx`) runs a Pyodide kernel with `web-python-kernel`.
+2. Agent startup code and tool functions are loaded from agent artifacts.
+3. The kernel calls a **single backend** service: `ri-scale/default@chat-proxy`.
+4. The chat-proxy calls OpenAI and returns OpenAI-compatible responses.
 
-**Tool Access:**
-The agent utilizes a set of specific Python utility functions to retrieve accurate data:
-*   `read_tech_details(tech_id)`: Fetches detailed specs for a technology.
-*   `read_node_details(node_id)`: Retrieves information about a specific facility/node.
-*   `read_nodes_by_country(country_code)`: Lists all nodes within a specific country.
-*   `read_website_page_details(page_id)`: Reads content from the Euro-BioImaging website.
-*   `fulltext_search(query)`: Performs a broad search across all indexed content.
+### Architecture Notes
 
-**Decision Making Process:**
-1.  **Analyze Query**: Determine if the user is asking about geography, technology, or general info.
-2.  **Identify Resources**: Scan the available index for relevant IDs (Technologies, Nodes, etc.).
-3.  **Retrieve Details**: Call the appropriate utility functions to get granular data.
-4.  **Synthesize Answer**: Combine the data into a comprehensive response, ensuring geographic context and specific availability details are included.
+- No local Python backend is required for production chat.
+- The only backend for chat is the deployed Hypha app `chat-proxy` (which then calls OpenAI).
+- Frontend uses `mode: "random"` when resolving `ri-scale/default@chat-proxy`.
+
+### Chat Proxy Contract
+
+Current frontend expects chat-proxy to expose:
+
+- `chat_completion(messages, tools, tool_choice, model)`
+
+The service must be **publicly visible** for anonymous users.
+
+---
+
+## Deploying Chat Proxy (Developer)
+
+Use Hypha Apps CLI (install + start):
+
+```bash
+python scripts/deploy_chat_proxy.py
+```
+
+This script installs and starts app id `chat-proxy`, and frontend resolves:
+
+- `ri-scale/default@chat-proxy`
+
+If you redeploy, restart the frontend kernel session so the latest bridge code is used.
+
+---
+
+## Troubleshooting Agents
+
+- **Service not found**: ensure app is started, not just installed.
+- **Permission denied**: verify service visibility is public.
+- **No response / PythonError**: restart kernel and re-open agent.
+- **Stale behavior after fixes**: hard-refresh browser to clear old worker state.
 
 ---
 
 ## Documentation & Help
 
-*   **About**: consistent with the project goals, learn more on the [About](/about) page.
-*   **Terms**: Review the [Terms of Service](/toc) for acceptable usage policy.
-*   **API**: Developers can access the [API Documentation](/#/api) to integrate programmatically.
+- **About**: [About](/about)
+- **Terms**: [Terms of Service](/toc)
+- **API**: [API Documentation](/#/api)

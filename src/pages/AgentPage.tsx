@@ -122,6 +122,9 @@ const AgentPage: React.FC = () => {
             const installCode = `
 import micropip
 import json
+import traceback
+import js
+
 try:
     packages = json.loads('${packagesJson}')
     print(f"Installing packages: {packages}")
@@ -129,6 +132,40 @@ try:
     print("Dependencies installed successfully.")
 except Exception as e:
     print(f"Error installing dependencies: {e}")
+
+from hypha_rpc import connect_to_server
+
+# Define the proxy function for compatibility with agents expecting js.hypha_chat_proxy
+_hypha_server_connection = None
+
+async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
+  global _hypha_server_connection
+  try:
+    messages = json.loads(messages_json)
+    tools = json.loads(tools_json) if tools_json else None
+    tool_choice = json.loads(tool_choice_json) if tool_choice_json and tool_choice_json != "auto" else tool_choice_json
+
+    if _hypha_server_connection is None:
+      print("DEBUG: Connecting to Hypha server for chat proxy...")
+      _hypha_server_connection = await connect_to_server({
+        "server_url": "https://hypha.aicell.io",
+        "method_timeout": 60
+      })
+
+    server = _hypha_server_connection
+
+    proxy = await server.get_service("ri-scale/default@chat-proxy", {"mode": "random"})
+
+    result = await proxy.chat_completion(messages, tools, tool_choice, model)
+    return json.dumps(result)
+  except BaseException as e:
+    print(f"DEBUG: Exception in hypha_chat_proxy bridge: {e}")
+    traceback.print_exc()
+    return json.dumps({"error": f"bridge-error: {str(e)}"})
+
+# Compatibility: some agent code paths call js.hypha_chat_proxy directly
+js.hypha_chat_proxy = hypha_chat_proxy
+print("DEBUG: hypha_chat_proxy bridge ready")
             `;
             await executeCode(installCode);
         }
@@ -222,6 +259,48 @@ except Exception as e:
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Expose proxy wrapper to Python environment
+  useEffect(() => {
+    // Only set up the proxy when the server is connected and available
+    if (server) {
+      console.log("AgentPage: Registering hypha_chat_proxy...");
+      (window as any).hypha_chat_proxy = async (messages: string | any, tools: string | any, tool_choice: string | any, model: string) => {
+        try {
+           console.log("AgentPage: hypha_chat_proxy called with model:", model);
+           const args = {
+              messages: typeof messages === 'string' ? JSON.parse(messages) : messages,
+              tools: tools ? (typeof tools === 'string' ? JSON.parse(tools) : tools) : null,
+              tool_choice: tool_choice ? (typeof tool_choice === 'string' ? JSON.parse(tool_choice) : tool_choice) : null,
+              model
+           };
+           
+             console.log("AgentPage: Resolving chat proxy service...");
+             const proxy = await server.getService("ri-scale/default@chat-proxy", { mode: "random" });
+
+           console.log("AgentPage: invoking chat_completion...");
+           // Ensure proxy is valid before calling
+           if (!proxy || typeof proxy.chat_completion !== 'function') {
+               throw new Error("Proxy service found but has no chat_completion method.");
+           }
+
+           const result = await proxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model);
+           console.log("AgentPage: chat_completion result:", result);
+           
+           return JSON.stringify(result);
+        } catch (e: any) {
+          console.error("Error in hypha_chat_proxy:", e);
+          const errorMsg = e.message || String(e);
+          // Return the error in a clean JSON format for the python wrapper to parse
+          return JSON.stringify({ error: errorMsg });
+        }
+      };
+    } else {
+        console.log("AgentPage: Server not ready, hypha_chat_proxy not registered.");
+        // Clear it if server disconnects to avoid stale calls
+        (window as any).hypha_chat_proxy = undefined;
+    }
+  }, [server]);
 
   // Connect implicitly if not connected
   useEffect(() => {
@@ -334,29 +413,13 @@ except Exception as e:
     setIsTyping(true);
 
     try {
-
-    try {
-      
-      // Get OpenAI Key from chat-proxy
-      let apiKey = "";
-      try {
-          const proxy = await server.getService("ri-scale/chat-proxy");
-          const tokenData = await proxy.get_openai_token();
-          apiKey = tokenData.access_token || tokenData.client_secret?.value;
-      } catch (e) {
-          console.error("Failed to get OpenAI key from proxy:", e);
-          // Fallback or error?
-      }
-
-      try {
-        const pythonResponse = await new Promise<string>(async (resolve, reject) => {
+      const pythonResponse = await new Promise<string>(async (resolve, reject) => {
             const code = `
 import asyncio
 import js
 import json
 import traceback
 import inspect
-from openai import AsyncOpenAI
 
 # Helper to send response safely
 def send_response(data):
@@ -365,31 +428,28 @@ def send_response(data):
 async def _chat_wrapper():
     try:
         user_msg = json.loads('''${JSON.stringify(newMessage.content).replace(/'''/g, "\\'\\'\\'")}''')
-        api_key = "${apiKey}"
         
-        if not api_key:
-            send_response({"text": "Error: API Key not found. Please ensure chat-proxy is running."})
-            return
-
-        client = AsyncOpenAI(api_key=api_key)
-        
-        # Discover tools
+        # Discover tools from globals
         tools = []
         available_functions = {}
         
-        # Basic filtering for user-defined functions
-        # We assume functions without underscores are 'public' tools
         for name, func in globals().items():
-            if callable(func) and not name.startswith('_') and name not in ['send_response', '_chat_wrapper', 'exit', 'quit', 'get_ipython', 'open', 'print', 'help']:
-                # Inspect docstring for description
+            is_user_function = (
+                (inspect.isfunction(func) or inspect.iscoroutinefunction(func))
+                and getattr(func, '__module__', None) == '__main__'
+            )
+            if is_user_function and not name.startswith('_') and name not in ['send_response', '_chat_wrapper', 'exit', 'quit', 'get_ipython', 'open', 'print', 'help', 'AsyncOpenAI', 'connect_to_server', 'traceback', 'inspect', 'json', 'js', 'asyncio', 'hypha_chat_proxy']:
                 doc = inspect.getdoc(func) or "No description provided."
-                
-                # Inspect signature for parameters
-                sig = inspect.signature(func)
+
+                try:
+                    sig = inspect.signature(func)
+                except Exception:
+                    continue
+
                 params_schema = {"type": "object", "properties": {}, "required": []}
                 
                 for param_name, param in sig.parameters.items():
-                    param_type = "string" # Default
+                    param_type = "string" 
                     if param.annotation != inspect.Parameter.empty:
                         if param.annotation == int: param_type = "integer"
                         elif param.annotation == float: param_type = "number"
@@ -413,99 +473,136 @@ async def _chat_wrapper():
 
         messages = [{"role": "user", "content": user_msg}]
         
-        # First call
-        response = await client.chat.completions.create(
-            model="gpt-4-turbo-preview", # Or gpt-3.5-turbo
-            messages=messages,
-            tools=tools if tools else None,
-            tool_choice="auto" if tools else None
-        )
+        # Prepare arguments for hypha_chat_proxy
+        # It expects JSON strings
+        messages_json = json.dumps(messages)
+        tools_json = json.dumps(tools) if tools else None
+        tool_choice_json = json.dumps("auto") if tools else None 
         
-        response_message = response.choices[0].message
-        tool_calls = response_message.tool_calls
+        print("DEBUG: Calling hypha_chat_proxy internal function...")
+        # Route through JS wrapper via Python bridge
+        result_json = await hypha_chat_proxy(
+            messages_json, 
+            tools_json, 
+            tool_choice_json, 
+            "gpt-4.1-nano-2025-04-14"
+        )
+        print(f"DEBUG: hypha_chat_proxy returned: {result_json[:100]}...")
+        
+        result = json.loads(result_json)
+        
+        if isinstance(result, dict) and "error" in result:
+             send_response({"text": f"Error from proxy: {result['error']}"})
+             return
+
+        choice = result['choices'][0]
+        response_message = choice['message']
+        tool_calls = response_message.get('tool_calls')
+        content = response_message.get('content')
         
         if tool_calls:
             # Append assistant's response (tool call request)
             messages.append(response_message)
             
             for tool_call in tool_calls:
-                function_name = tool_call.function.name
+                function_name = tool_call['function']['name']
+                # Arguments might be string or dict depending on how proxy returned it
+                args_content = tool_call['function']['arguments']
+                if isinstance(args_content, str):
+                    function_args = json.loads(args_content)
+                else:
+                    function_args = args_content
+                    
+                tool_call_id = tool_call['id']
+                
                 function_to_call = available_functions.get(function_name)
-                function_args = json.loads(tool_call.function.arguments)
                 
                 if function_to_call:
                     print(f"Calling tool: {function_name}({function_args})")
                     try:
-                        # Call the function (could be async or sync)
                         if inspect.iscoroutinefunction(function_to_call):
                             function_response = await function_to_call(**function_args)
                         else:
                             function_response = function_to_call(**function_args)
                             
                         messages.append({
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call_id,
                             "role": "tool",
                             "name": function_name,
                             "content": str(function_response),
                         })
                     except Exception as e:
                         messages.append({
-                            "tool_call_id": tool_call.id,
+                            "tool_call_id": tool_call_id,
                             "role": "tool",
                             "name": function_name,
                             "content": f"Error: {str(e)}",
                         })
             
-            # Second call to get final response
-            second_response = await client.chat.completions.create(
-                model="gpt-4-turbo-preview",
-                messages=messages
+            # Second call
+            # Re-serialize messages for the second call
+            messages_json_2 = json.dumps(messages)
+            
+            result_json_2 = await hypha_chat_proxy(
+                messages_json_2,
+                None,
+                None,
+                "gpt-4.1-nano-2025-04-14"
             )
-            final_content = second_response.choices[0].message.content
+            
+            result2 = json.loads(result_json_2)
+            
+            if isinstance(result2, dict) and "error" in result2:
+                 send_response({"text": f"Error from proxy: {result2['error']}"})
+                 return
+                 
+            final_content = result2['choices'][0]['message']['content']
             send_response({"text": final_content})
             
         else:
-            send_response({"text": response_message.content})
+            send_response({"text": content})
 
     except Exception as e:
         traceback.print_exc()
         send_response({"text": f"Error executing chat: {str(e)}"})
 
-asyncio.create_task(_chat_wrapper())
+await _chat_wrapper()
 `;
         if (executeCode) {
-            await executeCode(code, {
+          await executeCode(code, {
                  onOutput: (log) => {
-                    // Try to catch any output that looks like a response, sometimes stdout is split
+              if (log.type === 'error') {
+                reject(new Error(log.content || 'Kernel execution error'));
+                return;
+              }
                     if (log.type === 'stdout') {
                         const content = log.content;
                         if (content.includes('__RESPONSE_START__:')) {
                              const parts = content.split('__RESPONSE_START__:');
                              if (parts.length > 1) {
                                  try {
-                                     // Handle potentially multiple lines or broken JSON
                                      let jsonStr = parts[1].trim();
-                                     // If we got partial JSON, we might be in trouble, but let's try
                                      const parsed = JSON.parse(jsonStr);
                                      resolve(typeof parsed === 'string' ? parsed : (parsed.text || JSON.stringify(parsed)));
                                  } catch (e) {
-                                     // If parsing fails, maybe just return raw string
                                      resolve(parts[1].trim());
                                  }
                              }
                         }
                     }
+                     },
+                     onStatus: (status) => {
+                      if (status === 'Error') {
+                        reject(new Error('Kernel execution failed while sending message.'));
+                      }
                  }
              });
         }
              
-             // Fallback timeout or if no response parsed?
-             // Resolve null?
-             setTimeout(() => resolve("No response from agent."), 30000);
+             setTimeout(() => resolve("No response from agent (timeout)."), 30000);
         });
         
         const responseText = pythonResponse;
-
         const responseMessage: Message = {
             id: (Date.now() + 1).toString(),
             role: 'assistant',
@@ -514,24 +611,8 @@ asyncio.create_task(_chat_wrapper())
         };
         setMessages(prev => [...prev, responseMessage]);
 
-      } catch (err: any) {
-          console.error("Local python execution failed:", err);
-           const errorResponse: Message = {
-            id: Date.now().toString(),
-            role: 'system',
-            content: `**Error**: ${err.message || 'Unknown error during execution.'}`,
-            timestamp: new Date()
-          };
-          setMessages(prev => [...prev, errorResponse]);
-      }
-
-    } catch (e: any) {
-         console.error("Error in chat logic:", e);
-    }
-
     } catch (error: any) {
       console.error("Error sending message:", error);
-      
       const errorResponse: Message = {
         id: Date.now().toString(),
         role: 'system',
