@@ -220,7 +220,7 @@ const Docs: React.FC = () => {
                       <div className="bg-gray-50 rounded-lg p-5 border border-gray-100 mb-6">
                          <h3 className="font-semibold text-gray-900 mb-2">Euro-BioImaging Finder</h3>
                          <code className="text-xs bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 block w-fit mb-3">
-                           hypha-agents/leisure-scrimmage-disliked-more
+                           hypha-agents/grammatical-deduction-bury-enormously
                          </code>
                          <p className="text-sm text-gray-700 mb-4">
                            This agent helps you discover imaging technologies, instruments, and services. It has access to a live index of resources.

@@ -335,13 +335,10 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         console.log("AgentPage: Agents found:", initialAgents);
 
         // Filter to only show the specific requested agent
-        const targetAgentAlias = 'dotted-acreage-slip-honestly';
+        const targetAgentAlias = 'grammatical-deduction-bury-enormously';
         const filteredAgents = initialAgents.filter((agent: any) => 
             agent.alias === targetAgentAlias || 
-            agent.id.includes(targetAgentAlias) ||
-            // Also matching the "Euro-BioImaging Finder" if user searches for it?
-            // The user said "Make this work with dotted-acreage-slip-honestly"
-            (agent.alias && agent.alias.includes('leisure-scrimmage'))
+          agent.id.includes(targetAgentAlias)
         );
 
         // We assume all found agents are "online" (available to start via proxy)

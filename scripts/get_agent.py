@@ -15,7 +15,7 @@ async def main():
     try:
         # Fetch the specific agent
         agent = await am.read(
-            artifact_id="hypha-agents/leisure-scrimmage-disliked-more"
+            artifact_id="hypha-agents/grammatical-deduction-bury-enormously"
         )
         print(json.dumps(agent["manifest"], indent=2))
 
