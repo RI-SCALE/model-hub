@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { FiSend, FiCpu, FiTrash2, FiStopCircle, FiZap, FiAlertCircle, FiTerminal } from 'react-icons/fi';
+import { FiSend, FiCpu, FiTrash2, FiStopCircle, FiZap, FiAlertCircle, FiTerminal, FiEdit2, FiX } from 'react-icons/fi';
 import { useHyphaStore } from '../store/hyphaStore';
 import { useKernel } from '../hooks/useKernel';
 
@@ -49,6 +49,7 @@ const AgentPage: React.FC = () => {
     executeCode, 
     kernelStatus, 
     kernelExecutionLog,
+    interruptKernel,
     // activeDatasetId, 
     // setActiveDatasetId 
   } = useKernel();
@@ -395,6 +396,36 @@ print("DEBUG: hypha_chat_proxy bridge ready")
   }, [selectedAgent]);
 
 
+  const handleCancel = async () => {
+    if (interruptKernel) {
+      await interruptKernel();
+      setIsTyping(false);
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        role: 'system',
+        content: '*Request cancelled by user.*',
+        timestamp: new Date()
+      }]);
+    }
+  };
+
+  const handleEditMessage = (msg: Message) => {
+    if (msg.role !== 'user') return;
+    
+    const index = messages.findIndex(m => m.id === msg.id);
+    if (index === -1) return;
+    
+    const subsequentMessages = messages.slice(index + 1);
+    if (subsequentMessages.length > 0) {
+        if (!window.confirm("Editing this message will clear all subsequent messages. Continue?")) {
+            return;
+        }
+    }
+    
+    setInput(msg.content);
+    setMessages(prev => prev.slice(0, index));
+  };
+
   const handleSendMessage = async () => {
     if (!input.trim() || !selectedAgent || !server) return;
 
@@ -410,6 +441,16 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     setIsTyping(true);
 
     try {
+      // Prepare history for Python
+      const history = messages
+          .filter(m => m.role !== 'system')
+          .map(m => ({ role: m.role, content: m.content }));
+      
+      // Add the new message
+      history.push({ role: newMessage.role, content: newMessage.content });
+      
+      const historyJson = JSON.stringify(history).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
       const pythonResponse = await new Promise<string>(async (resolve, reject) => {
             const code = `
 import asyncio
@@ -424,7 +465,7 @@ def send_response(data):
 
 async def _chat_wrapper():
     try:
-        user_msg = json.loads('''${JSON.stringify(newMessage.content).replace(/'''/g, "\\'\\'\\'")}''')
+        messages = json.loads('${historyJson}')
         
         # Discover tools from globals
         tools = []
@@ -467,8 +508,6 @@ async def _chat_wrapper():
                 available_functions[name] = func
         
         print(f"Discovered {len(tools)} tools: {[t['function']['name'] for t in tools]}")
-
-        messages = [{"role": "user", "content": user_msg}]
         
         # Prepare arguments for hypha_chat_proxy
         # It expects JSON strings
@@ -596,7 +635,7 @@ await _chat_wrapper()
              });
         }
              
-             setTimeout(() => resolve("No response from agent (timeout)."), 30000);
+             setTimeout(() => resolve("No response from agent (timeout)."), 65000);
         });
         
         const responseText = pythonResponse;
@@ -740,8 +779,19 @@ await _chat_wrapper()
                 {messages.map((msg) => (
                     <div
                     key={msg.id}
-                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                    className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group items-end mb-4`}
                     >
+                    {msg.role === 'user' && (
+                         <div className="mr-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                             <button
+                                 onClick={() => handleEditMessage(msg)}
+                                 className="text-gray-400 hover:text-gray-600 p-1.5 rounded-full hover:bg-gray-100"
+                                 title="Edit"
+                             >
+                                 <FiEdit2 size={14} />
+                             </button>
+                         </div>
+                    )}
                     <div
                         className={`max-w-[85%] lg:max-w-[70%] rounded-2xl px-5 py-3 shadow-sm ${
                         msg.role === 'user'
@@ -827,17 +877,28 @@ await _chat_wrapper()
                   className="flex-1 max-h-40 min-h-[50px] w-full bg-transparent border-0 focus:ring-0 p-3 resize-none text-gray-800 placeholder-gray-400 disabled:cursor-not-allowed"
                   rows={1}
                 />
-                <button
-                  onClick={handleSendMessage}
-                  disabled={!input.trim() || isTyping || !isKernelReady || !agentReady}
-                  className={`mb-2 mr-2 p-2 rounded-lg transition-colors ${
-                    input.trim() && !isTyping && isKernelReady && agentReady
-                      ? 'bg-ri-orange text-white hover:bg-orange-600'
-                      : 'bg-gray-100 text-gray-300 cursor-not-allowed'
-                  }`}
-                >
-                  {isTyping ? <FiStopCircle size={20} /> : <FiSend size={20} />}
-                </button>
+                
+                {isTyping ? (
+                    <button
+                      onClick={handleCancel}
+                      className="mb-2 mr-2 p-2 rounded-lg bg-red-100 text-red-500 hover:bg-red-200 transition-colors"
+                      title="Cancel"
+                    >
+                        <FiStopCircle size={20} />
+                    </button>
+                ) : (
+                    <button
+                      onClick={handleSendMessage}
+                      disabled={!input.trim() || isTyping || !isKernelReady || !agentReady}
+                      className={`mb-2 mr-2 p-2 rounded-lg transition-colors ${
+                        input.trim() && !isTyping && isKernelReady && agentReady
+                          ? 'bg-ri-orange text-white hover:bg-orange-600'
+                          : 'bg-gray-100 text-gray-300 cursor-not-allowed'
+                      }`}
+                    >
+                      <FiSend size={20} />
+                    </button>
+                )}
               </div>
               <p className="text-center text-xs text-gray-400 mt-2">
                 Running in client-side Python kernel.

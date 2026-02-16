@@ -32,14 +32,34 @@ Agents help users by turning natural-language questions into tool-assisted respo
 
 ### Example Agent
 
-- **Euro-BioImaging Finder**
-- Typical focus: imaging services, technologies, and nodes.
+- **BioImage Finder**
+- Focus: Searching the BioImage Archive (TM) datasets.
+- Note: This replaces the Euro-BioImaging Finder.
 
-### Typical Capabilities
+### BioImage Finder Capabilities
 
-- Geographic lookup (e.g., facilities in a country)
-- Technology lookup (e.g., specific microscopy technique)
-- Guided discovery with links/details from indexed resources
+It uses two endpoints from the BioImage Archive to search through their datasets based on the user's prompts.
+
+#### Searching the BioImage Archive
+
+Use the Search box available in the top-right corner of every page. Enter any words that describe studies you are interested in. For example entering the words confocal fluorescence microscopy ( returns all studies containing any or all three words. Search terms are retained in the search box, where they can be refined (see the Advanced search section below).
+
+The search results page is a list of matching studies sorted according to relevance. You can change the sorting by using the Sort by selector. Clicking on the title of a study takes you to a more detailed page about that study. If there are many results, they will be split over multiple pages. Links at the bottom of the results allow you to navigate the pages, and links at the left of the results allow you to filter the studies by collection, release date and/or publication resource type.
+
+Within the results any matching search word terms are highlighted. Yellow highlighting indicates exact matches, green highlighting indicates synonyms, and peach highlighting indicates more specific matches (e.g. “pancreatic ductal adenocarcinoma” as a more specific term for “adenocarcinoma”). These more specific terms are from EFO ( the Experimental Factor Ontology ).
+
+**Advanced search**
+
+Queries are case-insensitive. Each word in the query is treated as a separate term (unless surrounded by double quotes), and by default every result has to contain at least one of the terms. This behaviour can be modified by using boolean operators and brackets; e.g.
+
+* `confocal fluorescence microscopy` returns all studies containing any or all three words
+* `confocal OR fluorescence OR microscopy` returns all studies containing any or all three words, i.e it is the same as the previous query
+* `confocal AND fluorescence AND microscopy` returns only studies containing all three words in any order
+* `“confocal fluorescence microscopy”` returns only studies containing the quoted phrase.
+* `microscopy AND (fluorescence OR confocal)` returns only studies containing the term microscopy and either confocal and/or fluorescence.
+* `microscopy AND NOT (fluorescence OR confocal)` returns studies containing the term microscopy but not confocal or fluorescence.
+
+Queries containing star or question mark characters are treated separately. A star character will match any combination of zero or more characters, e.g., `leuk*mia` will match to leukemia and leukaemia, as well as leukqwertymia. A question mark character will match any single characters, e.g., `m?n` will match both man and men. Matched terms for queries that include wildcards are not highlighted in the results.
 
 ---
 

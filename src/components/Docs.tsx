@@ -214,47 +214,39 @@ const Docs: React.FC = () => {
                    <div>
                       <h2 className="text-xl font-semibold text-gray-900 mb-2">AI Agents</h2>
                       <p className="text-gray-600 mb-6">
-                         Interact with specialized AI agents to navigate services and resources. The core agent is the Euro-BioImaging Finder.
+                         Interact with specialized AI agents to navigate services and resources. The core agent is the BioImage Archive Finder.
                       </p>
                       
                       <div className="bg-gray-50 rounded-lg p-5 border border-gray-100 mb-6">
-                         <h3 className="font-semibold text-gray-900 mb-2">Euro-BioImaging Finder</h3>
+                         <h3 className="font-semibold text-gray-900 mb-2">BioImage Archive Finder</h3>
                          <code className="text-xs bg-gray-200 px-1.5 py-0.5 rounded text-gray-700 block w-fit mb-3">
                            hypha-agents/grammatical-deduction-bury-enormously
                          </code>
                          <p className="text-sm text-gray-700 mb-4">
-                           This agent helps you discover imaging technologies, instruments, and services. It has access to a live index of resources.
+                           This agent helps you discover datasets in BioImage Archive.
                          </p>
                          
                          <strong className="text-sm font-medium text-gray-900 block mb-2">Capabilities:</strong>
                          <ul className="list-disc list-inside text-sm text-gray-600 space-y-1 ml-1">
-                            <li><strong>Geographic Queries:</strong> Find nodes in specific countries (e.g., "facilities in Germany").</li>
-                            <li><strong>Technology Queries:</strong> Locate specific techniques (e.g., "super-resolution microscopy").</li>
-                            <li><strong>General Assistance:</strong> Guides on accessing services.</li>
+                            <li><strong>Author Queries:</strong> Search dataset.</li>
+                            <li><strong>Genome Queries:</strong> Locate specific techniques (e.g., "super-resolution microscopy").</li>
+                            <li><strong>Full-Text Search:</strong> Broad queries across all metadata (e.g., "datasets related to cancer research").</li>
                          </ul>
                       </div>
 
                       <div className="space-y-4">
                          <h4 className="font-semibold text-gray-900 text-sm">How it Works</h4>
                          <p className="text-sm text-gray-600">
-                            The agent uses specialized tools to query the database:
+                            The agent uses two endpoints to query the BioImage Archive:
                          </p>
                          <ul className="grid sm:grid-cols-2 gap-3 text-sm text-gray-600">
                             <li className="flex items-center gap-2">
                                <span className="w-1.5 h-1.5 rounded-full bg-ri-orange/60"></span>
-                               <code>read_tech_details</code>: Technology specs
+                               https://beta.bioimagearchive.org/search/search/fts: Search dataset
                             </li>
                             <li className="flex items-center gap-2">
                                <span className="w-1.5 h-1.5 rounded-full bg-ri-orange/60"></span>
-                               <code>read_node_details</code>: Facility info
-                            </li>
-                            <li className="flex items-center gap-2">
-                               <span className="w-1.5 h-1.5 rounded-full bg-ri-orange/60"></span>
-                               <code>read_nodes_by_country</code>: Geographic search
-                            </li>
-                            <li className="flex items-center gap-2">
-                               <span className="w-1.5 h-1.5 rounded-full bg-ri-orange/60"></span>
-                               <code>fulltext_search</code>: Broad search
+                               https://beta.bioimagearchive.org/search/search/fts/image: Search images
                             </li>
                          </ul>
                       </div>
