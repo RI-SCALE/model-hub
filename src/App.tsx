@@ -17,7 +17,6 @@ import './github-markdown.css'
 import { HyphaProvider } from './HyphaContext';
 import ApiDocs from './components/ApiDocs';
 import Docs from './components/Docs';
-import TermsOfService from './components/TermsOfService';
 import { KernelProvider } from './hooks/useKernel';
 
 // Add a utility function to check if footer should be hidden
@@ -78,7 +77,6 @@ const AppContent: React.FC = () => {
           <Route path="/edit/:artifactId/:version?" element={<Edit />} />
           <Route path="/api" element={<ApiDocs />} />
           <Route path="/docs" element={<Docs />} />
-          <Route path="/toc" element={<TermsOfService />} />
         </Routes>
       </main>
       <Footer />

@@ -57,6 +57,10 @@ const Navbar: React.FC = () => {
               <BiCube className="mr-2" size={18} />
               Models
             </Link>
+            <Link to="/agents" className={navLinkClasses("/agents")}>
+              <HiOutlineBeaker className="mr-2" size={18} />
+              Agents
+            </Link>
             <Link to="/partners" className={navLinkClasses("/partners")}>
               <BsPeople className="mr-2" size={18} />
               Partners
@@ -128,6 +132,14 @@ const Navbar: React.FC = () => {
             >
               <BiCube className="mr-3" size={20} />
               Models
+            </Link>
+            <Link 
+              to="/agents" 
+              className={mobileNavLinkClasses("/agents")}
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              <HiOutlineBeaker className="mr-3" size={18} />
+              Agents
             </Link>
             <Link 
               to="/partners" 

@@ -2,7 +2,6 @@ import React, { useState, useEffect } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { 
   MagnifyingGlassIcon, 
-  FunnelIcon, 
   DocumentTextIcon, 
   CloudArrowUpIcon,
   UserCircleIcon,
@@ -63,6 +62,18 @@ const Docs: React.FC = () => {
             <CloudArrowUpIcon className="h-5 w-5" />
             Uploading & Sharing
           </button>
+               <button
+                  onClick={() => setActiveTab('agents')}
+                  className={`
+                     whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm flex items-center gap-2 transition-colors
+                     ${activeTab === 'agents'
+                        ? 'border-ri-orange text-ri-orange'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}
+                  `}
+               >
+                  <CpuChipIcon className="h-5 w-5" />
+                  Agents
+               </button>
         </nav>
       </div>
 
@@ -276,13 +287,13 @@ const Docs: React.FC = () => {
               <p className="text-sm text-gray-500 mt-1">Background and partners.</p>
            </Link>
 
-           <Link to="/toc" className="group p-4 border border-gray-200 rounded-lg hover:border-ri-orange hover:shadow-sm transition-all">
+           <Link to="/agents" className="group p-4 border border-gray-200 rounded-lg hover:border-ri-orange hover:shadow-sm transition-all">
               <div className="flex items-center justify-between mb-2">
-                 <ShieldCheckIcon className="h-6 w-6 text-gray-400 group-hover:text-ri-orange transition-colors" />
-                 <span className="text-ri-orange text-sm opacity-0 group-hover:opacity-100 transition-opacity">Review &rarr;</span>
+                 <CpuChipIcon className="h-6 w-6 text-gray-400 group-hover:text-ri-orange transition-colors" />
+                 <span className="text-ri-orange text-sm opacity-0 group-hover:opacity-100 transition-opacity">Open &rarr;</span>
               </div>
-              <h3 className="font-medium text-gray-900">Terms of Service</h3>
-              <p className="text-sm text-gray-500 mt-1">Usage guidelines and policies.</p>
+              <h3 className="font-medium text-gray-900">Agents</h3>
+              <p className="text-sm text-gray-500 mt-1">Open the interactive agent chat interface.</p>
            </Link>
         </div>
       </div>

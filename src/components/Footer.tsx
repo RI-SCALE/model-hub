@@ -20,8 +20,8 @@ const Footer: React.FC = () => {
             />
             
             <div className="flex flex-wrap justify-center gap-6 text-sm font-medium text-gray-400">
-              <Link to="/toc" className="hover:text-[#f39200] transition-colors">
-                Terms of Service
+              <Link to="/agents" className="hover:text-[#f39200] transition-colors">
+                Agents
               </Link>
               <Link to="/docs" className="hover:text-[#f39200] transition-colors">
                 API Docs

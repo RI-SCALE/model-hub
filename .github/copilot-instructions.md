@@ -6,35 +6,51 @@ This website is from an old project called "Bioimage model zoo" and we want to m
 
 ### Description of Model Hub from RI-SCALE project proposal:
 
-#### Task Description
-Deliver the AI model Hub, a framework designed for storing, serving, and benchmarking AI models, by leveraging open source technologies such as MLflow and the BioImage Model Zoo;
-Implement a provenance model to store provenance information along with the AI models thereby increasing in-depth model understanding, documentation, transparency and trustworthiness;
-Establish Authentication/Authorisation mechanisms to enforce model access policy control.
+## Agents
 
-#### Requirements
+### Frontend for agents
 
-##### Requirement 1
-Type: Functional
-Source: [ITT] Internal – Technical Team
-Partner Introducing Requirement: 
-Description: The AI Model Hub component must provide REST APIs and a basic Web UI for core model lifecycle operations (upload, discovery, versioning, retrieval) using MLflow as a backend. It must enable the storage and API-based retrieval of key provenance metadata (e.g., creator, date, dataset reference, parameters/environment, license) with each model version, and offer interfaces to initiate model benchmarking.
-Rationale: Fulfills the task requirements for delivering an AI Model Hub capable of storing, serving, and benchmarking models, incorporating a provenance model, and leveraging MLflow. This supports model sharing, reproducibility, transparency, and trustworthiness, contributing to project goals and potential KPIs related to model management and usage.
-Component That Fulfills It: AI Model Hub (WP3-T3.2)
-Status: Filtering
+The agents chat use pyodide, using the web-python-kernel. They relay requests to the chat-proxy app, Hypha app ID: ri-scale/chat-proxy.
 
-##### Requirement 2
-Type: Functional
-Source: [ITT] Internal – Technical Team
-Partner Introducing Requirement: 
-Description: The AI Model Hub must integrate with the central RI-SCALE Authentication and Authorisation Infrastructure (AAI), anticipated to be the Policy-Based Authorization Framework (WP4-T4.1), to enforce access control. Authorization decisions for all Hub functionalities and resources must be governed by policies managed within this AAI.
-Rationale: Directly addresses the task requirement to establish Authentication/Authorisation mechanisms for enforcing model access policies. This ensures secure and governed access to AI models within the Hub, aligning with project security requirements and potential KPIs for controlled resource access and compliance.
-Component That Fulfills It: AI Model Hub (WP3-T3.2)
-Status: Filtering
+Implementation of the web python kernel is here: https://github.com/oeway/web-python-kernel/tree/fa89a96152fd85e4263cff8f78435b440890a885
+
+Example usages of the web python kernel:
+1. https://github.com/aicell-lab/safe-colab repo. Ask the user for info from this one if you like
+2. https://github.com/aicell-lab/hypha-agents the main inspiration for the agents chat. Has extra functionality that is not yet implemented in the model hub agents chat, some of which will never be.
+
+
+### Backend for agents
+
+The only backends for agent chat are the ri-scale/chat-proxy app in Hypha and the OpenAI API (which is called from the chat-proxy). The chat-proxy is a microservice that acts as a proxy between the frontend and the OpenAI API. It is responsible for handling the authentication and authorization, and for forwarding the requests from the frontend to the OpenAI API.
 
 ## Role and Expertise
 You are an expert Python/JavaScript (full-stack) developer focusing on the RI-SCALE Model Hub project under the RI-SCALE EU initiative. You have deep knowledge of building cloud-native web applications and backends using **Hypha** (for server, service registration, and artifact management), along with modern frontend frameworks. Your code should be production-ready, well-documented, and consistent with best practices for both Python and JavaScript/TypeScript.
 
 This project is a frontend for the RI-SCALE Model Hub. It is built with React and Typescript, it uses `pnpm` as package manager.
+
+## Documentation
+
+Hypha artifact manager documentation is in artifact-manager-4.md
+Documentation for hypha apps is in apps.md
+Other Hypha documentation is in https://docs.amun.ai
+
+## Deploying and Running the Project
+
+**To start the project locally**, you can use the following commands:
+
+```bash
+pnpm start
+```
+
+**To deploy the chat-proxy**, look at ~/github-repos/hypha-apps-cli/README.md for instructions on how to deploy a microservice to Hypha. There is an example app there that you can use as a template for deploying the chat-proxy.
+
+The hypha-proxy files are in chat-proxy-app/.
+
+## Relevant repos
+
+1. https://github.com/aicell-lab/safe-colab repo. Private, accessible by hugokallander user. Ask the user for info from this one if you like
+2. https://github.com/aicell-lab/hypha-agents the main inspiration for the agents chat. Has extra functionality that is not yet implemented in the model hub agents chat, some of which will never be.
+
 
 ## Project Context
 The RI-SCALE Model Hub is a community-driven, open resource for sharing standardized AI models across research infrastructures. It is part of the **RI-SCALE** project, aiming to provide scalable Data Exploitation Platforms (DEPs), cloud-based services, robust data/metadata management, and easy-to-use developer and end-user tools.
@@ -47,6 +63,8 @@ We use a **Hypha**-based backend (written in Python) that handles:
 For detailed guidance on Hypha usage (server startup, file uploads, artifact manager APIs, etc.), see the separate documentation under `hypha-docs/`.
 
 ## Coding Standards
+
+IMPORTANT: test everything end to end. Make many tests, though not superfluous ones. When you present your results to the user, you should be confident that the code works and is tested, from simulated user input to true result, with minimal mocking. If you are not sure, test it before presenting it to the user. If it fails, keep iterating until it works.
 
 ### General Principles
 - **PEP 8** and **PEP 257** compliance for Python code.

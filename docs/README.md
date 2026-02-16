@@ -96,5 +96,4 @@ If you redeploy, restart the frontend kernel session so the latest bridge code i
 ## Documentation & Help
 
 - **About**: [About](/about)
-- **Terms**: [Terms of Service](/toc)
 - **API**: [API Documentation](/#/api)
