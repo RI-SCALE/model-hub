@@ -126,7 +126,7 @@ test.describe('BioImage Finder chat resilience', () => {
     await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole('button', { name: 'Cancel' })).toHaveCount(0, { timeout: 90_000 });
 
-    const timeoutCount = await page.locator('text=Chat request timed out after 45s').count();
+    const timeoutCount = await page.locator('text=Chat request timed out after').count();
     const afterAssistantCount = await assistantHeaders.count();
     expect(timeoutCount > 0 || afterAssistantCount > beforeAssistantCount).toBeTruthy();
 

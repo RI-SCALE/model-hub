@@ -30,7 +30,9 @@ const INPUT_DRAFT_CACHE_KEY = 'ri-scale-agent-input-drafts-v1';
 const DEFAULT_CHAT_MODEL = 'gpt-5-mini';
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
 const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
-const CHAT_PROXY_REQUEST_TIMEOUT_MS = 45_000;
+const CHAT_PROXY_REQUEST_TIMEOUT_MS = 60_000;
+const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 15_000;
+const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 45_000;
 
 const getChatProxyServiceId = (): string => {
   const isProductionBuild = process.env.NODE_ENV === 'production';
@@ -859,10 +861,15 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
     # Prefer the JS-side proxy wrapper, which uses the app connection and timeout settings
     try:
       if hasattr(js, "globalThis") and getattr(js.globalThis, "hypha_chat_proxy", None):
-        js_result = await js.globalThis.hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model)
+        js_result = await asyncio.wait_for(
+          js.globalThis.hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model),
+          timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
+        )
         if isinstance(js_result, str):
           return js_result
         return str(js_result)
+    except asyncio.TimeoutError:
+      return json.dumps({"error": "bridge-timeout: JS proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
     except BaseException as js_exp:
       print(f"DEBUG: JS proxy path unavailable, falling back to Python bridge: {js_exp}")
 
@@ -1036,6 +1043,24 @@ print("DEBUG: hypha_chat_proxy bridge ready")
              return JSON.stringify({ error: 'simulated-upstream-error' });
            }
 
+           const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, stage: string): Promise<T> => {
+             return await new Promise<T>((resolve, reject) => {
+               const timer = globalThis.setTimeout(() => {
+                 reject(new Error(`Timeout after ${Math.floor(timeoutMs / 1000)}s during ${stage}`));
+               }, timeoutMs);
+
+               promise
+                 .then((value) => {
+                   globalThis.clearTimeout(timer);
+                   resolve(value);
+                 })
+                 .catch((error) => {
+                   globalThis.clearTimeout(timer);
+                   reject(error);
+                 });
+             });
+           };
+
            console.log("AgentPage: hypha_chat_proxy called with model:", model);
            const args = {
               messages: typeof messages === 'string' ? JSON.parse(messages) : messages,
@@ -1045,7 +1070,11 @@ print("DEBUG: hypha_chat_proxy bridge ready")
            };
            
              console.log("AgentPage: Resolving chat proxy service...");
-             const proxy = await server.getService(CHAT_PROXY_SERVICE_ID, { mode: 'random', timeout: 600 });
+             const proxy: any = await withTimeout(
+               server.getService(CHAT_PROXY_SERVICE_ID, { mode: 'random', timeout: 600 }),
+               CHAT_PROXY_RESOLVE_TIMEOUT_MS,
+               `service resolution for ${CHAT_PROXY_SERVICE_ID}`
+             );
 
              if (!proxy) {
               throw new Error('Unable to resolve chat proxy service.');
@@ -1057,7 +1086,11 @@ print("DEBUG: hypha_chat_proxy bridge ready")
                throw new Error("Proxy service found but has no chat_completion method.");
            }
 
-           const result = await proxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model);
+           const result = await withTimeout(
+             proxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
+             CHAT_PROXY_COMPLETION_TIMEOUT_MS,
+             `chat_completion response from ${CHAT_PROXY_SERVICE_ID}`
+           );
            console.log("AgentPage: chat_completion result:", result);
            
            return JSON.stringify(result);
