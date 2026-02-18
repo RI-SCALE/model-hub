@@ -38,11 +38,12 @@ async def _search_via_proxy(kind: str, query: str, limit: int) -> Dict[str, Any]
             parsed = json.loads(result)
             if isinstance(parsed, dict):
                 return parsed
-            return None
+            return {"error": "Proxy returned non-dict response"}
         if isinstance(result, dict):
             return result
+        return {"error": "Proxy returned unsupported response type"}
     except Exception as exp:
-        print(f"Proxy search failed, falling back to direct request: {exp}")
+        return {"error": f"Proxy search failed: {exp}"}
 
     return None
 
@@ -59,7 +60,9 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
         Dictionary with request URL, total count, and top results.
     """
     proxied = await _search_via_proxy("datasets", query, limit)
-    if isinstance(proxied, dict) and "error" not in proxied:
+    if isinstance(proxied, dict):
+        if "error" in proxied:
+            raise RuntimeError(proxied["error"])
         return proxied
 
     url = _build_url(BASE_SEARCH_URL, query)
@@ -102,7 +105,9 @@ async def search_images(query: str, limit: int = 10) -> Dict[str, Any]:
         Dictionary with request URL, total count, and top results.
     """
     proxied = await _search_via_proxy("images", query, limit)
-    if isinstance(proxied, dict) and "error" not in proxied:
+    if isinstance(proxied, dict):
+        if "error" in proxied:
+            raise RuntimeError(proxied["error"])
         return proxied
 
     url = _build_url(BASE_IMAGE_SEARCH_URL, query)

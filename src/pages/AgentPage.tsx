@@ -1012,9 +1012,15 @@ print("DEBUG: hypha_chat_proxy bridge ready")
             throw new Error('Unable to resolve chat proxy service.');
           }
           if (kind === 'datasets') {
+            if (typeof proxy.search_datasets !== 'function') {
+              throw new Error('Chat proxy is missing search_datasets. Please redeploy chat-proxy app.');
+            }
             return await proxy.search_datasets(query, limit);
           }
           if (kind === 'images') {
+            if (typeof proxy.search_images !== 'function') {
+              throw new Error('Chat proxy is missing search_images. Please redeploy chat-proxy app.');
+            }
             return await proxy.search_images(query, limit);
           }
           throw new Error(`Unsupported search kind: ${kind}`);
