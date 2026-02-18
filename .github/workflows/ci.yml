@@ -28,7 +28,7 @@ jobs:
         run: pnpm tsc --noEmit
 
       - name: Unit tests
-        run: CI=true pnpm test --watchAll=false --passWithNoTests
+        run: CI=true pnpm exec react-scripts test --watchAll=false --passWithNoTests
 
       - name: Install Playwright browser
         run: pnpm playwright install --with-deps chromium
