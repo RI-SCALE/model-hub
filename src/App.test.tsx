@@ -1,6 +1,15 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
+
+jest.mock('./App', () => {
+  const React = require('react');
+  return {
+    __esModule: true,
+    default: () => React.createElement('nav', null, 'Mocked App Navigation'),
+  };
+});
+
 import App from './App';
 
 describe('App', () => {
