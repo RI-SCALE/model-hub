@@ -58,6 +58,22 @@ def parse_args() -> argparse.Namespace:
         "--expected-substring",
         default="",
     )
+    parser.add_argument(
+        "--check-search",
+        action="store_true",
+        help="Also verify search_datasets/search_images tool bridge",
+    )
+    parser.add_argument(
+        "--search-query",
+        default="cancer",
+        help="Query used when --check-search is enabled",
+    )
+    parser.add_argument(
+        "--search-limit",
+        type=int,
+        default=5,
+        help="Limit used when --check-search is enabled",
+    )
     return parser.parse_args()
 
 
@@ -130,6 +146,48 @@ async def run_health_check(args: argparse.Namespace) -> int:
             return 1
 
         print("✅ chat-proxy health check passed")
+
+        if args.check_search:
+            print("Checking BioImage Archive search bridge...")
+
+            if not hasattr(proxy, "search_datasets"):
+                print("❌ proxy is missing search_datasets")
+                return 1
+            if not hasattr(proxy, "search_images"):
+                print("❌ proxy is missing search_images")
+                return 1
+
+            try:
+                datasets = await asyncio.wait_for(
+                    proxy.search_datasets(args.search_query, int(args.search_limit)),
+                    timeout=float(args.timeout),
+                )
+                images = await asyncio.wait_for(
+                    proxy.search_images(args.search_query, int(args.search_limit)),
+                    timeout=float(args.timeout),
+                )
+            except asyncio.TimeoutError:
+                print(f"❌ search bridge timed out after {args.timeout}s")
+                return 1
+            except Exception as exp:
+                print(f"❌ search bridge call failed: {exp}")
+                traceback.print_exc()
+                return 1
+
+            for label, payload in (("datasets", datasets), ("images", images)):
+                if not isinstance(payload, dict):
+                    print(f"❌ {label} search returned non-dict payload: {type(payload)}")
+                    return 1
+                if "query" not in payload or "results" not in payload or "total" not in payload:
+                    print(f"❌ {label} search payload missing expected keys")
+                    print(json.dumps(payload, indent=2))
+                    return 1
+                if not isinstance(payload.get("results"), list):
+                    print(f"❌ {label} search results is not a list")
+                    return 1
+
+            print("✅ search bridge health check passed")
+
         return 0
     except asyncio.TimeoutError:
         print(f"❌ chat_completion timed out after {args.timeout}s")

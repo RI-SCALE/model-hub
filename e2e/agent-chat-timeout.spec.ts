@@ -19,6 +19,7 @@ async function sendAndAwaitResponse(
   prompt: string,
   options?: {
     assertNotOnlyPlaceholder?: string;
+    forbiddenSubstrings?: string[];
   }
 ) {
   const countErrorMarkers = async () => {
@@ -77,6 +78,12 @@ async function sendAndAwaitResponse(
       .filter({ has: page.locator('span.text-xs.font-semibold') });
     const lastAssistantText = ((await assistantMessages.last().innerText()).trim() || '').toLowerCase();
     expect(lastAssistantText).not.toBe(options.assertNotOnlyPlaceholder.trim().toLowerCase());
+
+    if (options?.forbiddenSubstrings && options.forbiddenSubstrings.length > 0) {
+      for (const forbidden of options.forbiddenSubstrings) {
+        expect(lastAssistantText).not.toContain(forbidden.toLowerCase());
+      }
+    }
   }
 }
 
@@ -98,6 +105,12 @@ test.describe('BioImage Finder chat reliability', () => {
       'find me some cancer datasets',
       {
         assertNotOnlyPlaceholder: "I'll search for datasets related to cancer in the BioImage archive. Please hold on for a moment.",
+        forbiddenSubstrings: [
+          'search service is currently unavailable',
+          'archive bridge is currently unavailable',
+          'couldn\'t fetch live dataset',
+          'i can\'t retrieve live dataset accessions right now',
+        ],
       }
     );
   });
