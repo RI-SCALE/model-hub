@@ -902,6 +902,48 @@ print("DEBUG: hypha_chat_proxy bridge ready")
 
         // 4. Run the script
         await executeCode(scriptContent);
+
+        const isBioimageFinderScript =
+          scriptContent.includes('search_datasets') &&
+          scriptContent.includes('search_images') &&
+          scriptContent.includes('BASE_SEARCH_URL');
+
+        if (isBioimageFinderScript) {
+          const bioimageProxyCompatibilityPatch = `
+    import json
+    import js
+
+    async def _ri_scale_proxy_search(kind, query, limit=10):
+      bridge = getattr(js.globalThis, "bioimage_archive_search", None)
+      if bridge is None:
+        raise RuntimeError("bioimage_archive_search bridge is unavailable")
+
+      result = await bridge(kind, query, int(limit))
+      if hasattr(result, "to_py"):
+        result = result.to_py()
+
+      if isinstance(result, str):
+        result = json.loads(result)
+
+      if not isinstance(result, dict):
+        raise RuntimeError("Proxy returned unsupported response type")
+
+      if result.get("error"):
+        raise RuntimeError(str(result["error"]))
+
+      return result
+
+    async def search_datasets(query: str, limit: int = 10):
+      return await _ri_scale_proxy_search("datasets", query, limit)
+
+    async def search_images(query: str, limit: int = 10):
+      return await _ri_scale_proxy_search("images", query, limit)
+
+    print("DEBUG: BioImage Finder tools routed via chat-proxy bridge")
+          `;
+          await executeCode(bioimageProxyCompatibilityPatch);
+        }
+
         console.log("Agent startup script executed.");
         
         setAgentReady(true);
