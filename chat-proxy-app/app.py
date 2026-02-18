@@ -1,6 +1,9 @@
 import json
 import logging
 import os
+import asyncio
+from urllib.parse import quote
+from urllib.request import urlopen
 from typing import Any
 
 from hypha_rpc import api
@@ -11,6 +14,77 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _client: AsyncOpenAI | None = None
+BASE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts"
+BASE_IMAGE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts/image"
+
+
+def _build_archive_url(base_url: str, query: str) -> str:
+    encoded = quote(query, safe='"()[]{}:*?+-/\\')
+    return f"{base_url}?query={encoded}"
+
+
+def _fetch_json(url: str) -> dict[str, Any]:
+    with urlopen(url, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    return payload if isinstance(payload, dict) else {}
+
+
+async def search_datasets(
+    query: str,
+    limit: int = 10,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    url = _build_archive_url(BASE_SEARCH_URL, query)
+    payload = await asyncio.to_thread(_fetch_json, url)
+    hits = payload.get("hits", []) if isinstance(payload, dict) else []
+    top_hits: list[dict[str, Any]] = []
+
+    for item in hits[: max(1, int(limit))]:
+        title = item.get("title") or item.get("name") or item.get("accession") or "Untitled"
+        accession = item.get("accession") or item.get("id") or ""
+        top_hits.append(
+            {
+                "title": title,
+                "accession": accession,
+                "url": f"https://www.ebi.ac.uk/bioimage-archive/{accession}" if accession else None,
+            }
+        )
+
+    return {
+        "query": query,
+        "url": url,
+        "total": len(hits),
+        "results": top_hits,
+    }
+
+
+async def search_images(
+    query: str,
+    limit: int = 10,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    url = _build_archive_url(BASE_IMAGE_SEARCH_URL, query)
+    payload = await asyncio.to_thread(_fetch_json, url)
+    hits = payload.get("hits", []) if isinstance(payload, dict) else []
+    top_hits: list[dict[str, Any]] = []
+
+    for item in hits[: max(1, int(limit))]:
+        image_id = item.get("id") or item.get("_id") or ""
+        accession = item.get("accession") or item.get("study_accession") or ""
+        top_hits.append(
+            {
+                "id": image_id,
+                "accession": accession,
+                "title": item.get("title") or item.get("name") or image_id,
+            }
+        )
+
+    return {
+        "query": query,
+        "url": url,
+        "total": len(hits),
+        "results": top_hits,
+    }
 
 
 async def _resolve_openai_key() -> str | None:
@@ -50,7 +124,7 @@ async def setup() -> dict[str, Any]:
         _client = None
         return {"ok": False, "error": "OPENAI_API_KEY is missing"}
 
-    _client = AsyncOpenAI(api_key=key, timeout=600.0, max_retries=2)
+    _client = AsyncOpenAI(api_key=key)
     logger.info("OpenAI client initialized")
     return {"ok": True}
 
@@ -76,7 +150,6 @@ async def chat_completion(
             kwargs["tools"] = tools
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
-        kwargs["timeout"] = 600.0
 
         response = await _client.chat.completions.create(**kwargs)
         return json.loads(response.model_dump_json())
@@ -90,5 +163,7 @@ api.export(
         "config": {"visibility": "public"},
         "setup": setup,
         "chat_completion": chat_completion,
+        "search_datasets": search_datasets,
+        "search_images": search_images,
     }
 )

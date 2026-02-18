@@ -4,6 +4,11 @@ from typing import Any, Dict, List
 
 import httpx
 
+try:
+    import js  # type: ignore
+except Exception:
+    js = None
+
 
 BASE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts"
 BASE_IMAGE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts/image"
@@ -12,6 +17,34 @@ BASE_IMAGE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts/imag
 def _build_url(base_url: str, query: str) -> str:
     encoded = quote(query, safe='"()[]{}:*?+-/\\')
     return f"{base_url}?query={encoded}"
+
+
+async def _search_via_proxy(kind: str, query: str, limit: int) -> Dict[str, Any] | None:
+    if js is None:
+        return None
+    try:
+        bridge = getattr(js.globalThis, "bioimage_archive_search", None)
+    except Exception:
+        return None
+
+    if not bridge:
+        return None
+
+    try:
+        result = await bridge(kind, query, int(limit))
+        if hasattr(result, "to_py"):
+            result = result.to_py()
+        if isinstance(result, str):
+            parsed = json.loads(result)
+            if isinstance(parsed, dict):
+                return parsed
+            return None
+        if isinstance(result, dict):
+            return result
+    except Exception as exp:
+        print(f"Proxy search failed, falling back to direct request: {exp}")
+
+    return None
 
 
 async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
@@ -25,25 +58,29 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
     Returns:
         Dictionary with request URL, total count, and top results.
     """
+    proxied = await _search_via_proxy("datasets", query, limit)
+    if isinstance(proxied, dict) and "error" not in proxied:
+        return proxied
+
     url = _build_url(BASE_SEARCH_URL, query)
     async with httpx.AsyncClient(timeout=30.0) as client:
-      response = await client.get(url)
-      response.raise_for_status()
-      payload = response.json()
+        response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
 
     hits = payload.get("hits", []) if isinstance(payload, dict) else []
     top_hits: List[Dict[str, Any]] = []
 
     for item in hits[: max(1, limit)]:
-      title = item.get("title") or item.get("name") or item.get("accession") or "Untitled"
-      accession = item.get("accession") or item.get("id") or ""
-      top_hits.append(
-          {
-              "title": title,
-              "accession": accession,
-              "url": f"https://www.ebi.ac.uk/bioimage-archive/{accession}" if accession else None,
-          }
-      )
+        title = item.get("title") or item.get("name") or item.get("accession") or "Untitled"
+        accession = item.get("accession") or item.get("id") or ""
+        top_hits.append(
+            {
+                "title": title,
+                "accession": accession,
+                "url": f"https://www.ebi.ac.uk/bioimage-archive/{accession}" if accession else None,
+            }
+        )
 
     return {
         "query": query,
@@ -64,25 +101,29 @@ async def search_images(query: str, limit: int = 10) -> Dict[str, Any]:
     Returns:
         Dictionary with request URL, total count, and top results.
     """
+    proxied = await _search_via_proxy("images", query, limit)
+    if isinstance(proxied, dict) and "error" not in proxied:
+        return proxied
+
     url = _build_url(BASE_IMAGE_SEARCH_URL, query)
     async with httpx.AsyncClient(timeout=30.0) as client:
-      response = await client.get(url)
-      response.raise_for_status()
-      payload = response.json()
+        response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
 
     hits = payload.get("hits", []) if isinstance(payload, dict) else []
     top_hits: List[Dict[str, Any]] = []
 
     for item in hits[: max(1, limit)]:
-      image_id = item.get("id") or item.get("_id") or ""
-      accession = item.get("accession") or item.get("study_accession") or ""
-      top_hits.append(
-          {
-              "id": image_id,
-              "accession": accession,
-              "title": item.get("title") or item.get("name") or image_id,
-          }
-      )
+        image_id = item.get("id") or item.get("_id") or ""
+        accession = item.get("accession") or item.get("study_accession") or ""
+        top_hits.append(
+            {
+                "id": image_id,
+                "accession": accession,
+                "title": item.get("title") or item.get("name") or image_id,
+            }
+        )
 
     return {
         "query": query,

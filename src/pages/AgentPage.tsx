@@ -1004,10 +1004,30 @@ print("DEBUG: hypha_chat_proxy bridge ready")
           return JSON.stringify({ error: errorMsg });
         }
       };
+
+      (globalThis as any).bioimage_archive_search = async (kind: string, query: string, limit: number = 10) => {
+        try {
+          const proxy = await server.getService(CHAT_PROXY_SERVICE_ID, { mode: 'random', timeout: 600 });
+          if (!proxy) {
+            throw new Error('Unable to resolve chat proxy service.');
+          }
+          if (kind === 'datasets') {
+            return await proxy.search_datasets(query, limit);
+          }
+          if (kind === 'images') {
+            return await proxy.search_images(query, limit);
+          }
+          throw new Error(`Unsupported search kind: ${kind}`);
+        } catch (e: any) {
+          const errorMsg = e?.message || String(e);
+          return { error: errorMsg };
+        }
+      };
     } else {
         console.log("AgentPage: Server not ready, hypha_chat_proxy not registered.");
         // Clear it if server disconnects to avoid stale calls
-        (window as any).hypha_chat_proxy = undefined;
+        (globalThis as any).hypha_chat_proxy = undefined;
+        (globalThis as any).bioimage_archive_search = undefined;
     }
   }, [server]);
 
