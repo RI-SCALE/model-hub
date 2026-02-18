@@ -30,12 +30,14 @@ const INPUT_DRAFT_CACHE_KEY = 'ri-scale-agent-input-drafts-v1';
 const DEFAULT_CHAT_MODEL = 'gpt-5-mini';
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
 const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
+const CHAT_PROXY_REQUEST_TIMEOUT_MS = 45_000;
 
 const getChatProxyServiceId = (): string => {
   const isProductionBuild = process.env.NODE_ENV === 'production';
   const configuredAppId = (process.env.REACT_APP_CHAT_PROXY_APP_ID || '').trim();
-  const defaultAppId = isProductionBuild ? PRODUCTION_CHAT_PROXY_APP_ID : DEFAULT_DEV_CHAT_PROXY_APP_ID;
-  const primaryAppId = configuredAppId || defaultAppId;
+  const primaryAppId = isProductionBuild
+    ? (configuredAppId || PRODUCTION_CHAT_PROXY_APP_ID)
+    : DEFAULT_DEV_CHAT_PROXY_APP_ID;
   return `ri-scale/default@${primaryAppId}`;
 };
 
@@ -844,6 +846,16 @@ _hypha_server_connection = None
 async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
   global _hypha_server_connection
   try:
+    test_mode = None
+    if hasattr(js, "globalThis"):
+      test_mode = getattr(js.globalThis, "__chatProxyTestMode", None)
+
+    if test_mode == "stall":
+      await asyncio.sleep(3600)
+
+    if test_mode == "upstream-error":
+      return json.dumps({"error": "simulated-upstream-error"})
+
     # Prefer the JS-side proxy wrapper, which uses the app connection and timeout settings
     try:
       if hasattr(js, "globalThis") and getattr(js.globalThis, "hypha_chat_proxy", None):
@@ -1012,8 +1024,18 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     // Only set up the proxy when the server is connected and available
     if (server) {
       console.log("AgentPage: Registering hypha_chat_proxy...");
+      (globalThis as any).__chatProxyServiceId = CHAT_PROXY_SERVICE_ID;
       (globalThis as any).hypha_chat_proxy = async (messages: string | any, tools: string | any, tool_choice: string | any, model: string) => {
         try {
+           const testMode = (globalThis as any).__chatProxyTestMode;
+           if (testMode === 'stall') {
+             await new Promise(() => {
+             });
+           }
+           if (testMode === 'upstream-error') {
+             return JSON.stringify({ error: 'simulated-upstream-error' });
+           }
+
            console.log("AgentPage: hypha_chat_proxy called with model:", model);
            const args = {
               messages: typeof messages === 'string' ? JSON.parse(messages) : messages,
@@ -1074,6 +1096,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     } else {
         console.log("AgentPage: Server not ready, hypha_chat_proxy not registered.");
         // Clear it if server disconnects to avoid stale calls
+      (globalThis as any).__chatProxyServiceId = undefined;
         (globalThis as any).hypha_chat_proxy = undefined;
         (globalThis as any).bioimage_archive_search = undefined;
     }
@@ -1360,10 +1383,19 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         const runChatExecution = async (): Promise<string> => {
           return await new Promise<string>(async (resolve, reject) => {
             let settled = false;
+            let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+            const cleanup = () => {
+              if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+                timeoutHandle = null;
+              }
+            };
 
             const safeResolve = (value: string) => {
               if (settled) return;
               settled = true;
+              cleanup();
               updateAgentProgress('Response received.');
               resolve(value);
             };
@@ -1371,9 +1403,18 @@ print("DEBUG: hypha_chat_proxy bridge ready")
             const safeReject = (error: Error) => {
               if (settled) return;
               settled = true;
+              cleanup();
               updateAgentProgress('Request failed.', error.message || 'Unknown error while executing chat.');
               reject(error);
             };
+
+            timeoutHandle = setTimeout(() => {
+              safeReject(
+                new Error(
+                  `Chat request timed out after ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s while waiting for ${CHAT_PROXY_SERVICE_ID}`
+                )
+              );
+            }, CHAT_PROXY_REQUEST_TIMEOUT_MS);
 
             const code = `
 import asyncio
