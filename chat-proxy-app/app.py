@@ -29,13 +29,40 @@ def _fetch_json(url: str) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+async def _fetch_json_with_retries(
+    url: str,
+    *,
+    attempts: int = 3,
+    retry_delay_seconds: float = 1.0,
+) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await asyncio.to_thread(_fetch_json, url)
+        except Exception as exp:
+            last_error = exp
+            logger.warning(
+                "Archive fetch failed for %s (attempt %s/%s): %s",
+                url,
+                attempt,
+                attempts,
+                exp,
+            )
+            if attempt < attempts:
+                await asyncio.sleep(retry_delay_seconds * attempt)
+
+    raise RuntimeError(
+        f"BioImage Archive request failed after {attempts} attempts: {last_error}"
+    )
+
+
 async def search_datasets(
     query: str,
     limit: int = 10,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     url = _build_archive_url(BASE_SEARCH_URL, query)
-    payload = await asyncio.to_thread(_fetch_json, url)
+    payload = await _fetch_json_with_retries(url)
     hits = payload.get("hits", []) if isinstance(payload, dict) else []
     top_hits: list[dict[str, Any]] = []
 
@@ -64,7 +91,7 @@ async def search_images(
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     url = _build_archive_url(BASE_IMAGE_SEARCH_URL, query)
-    payload = await asyncio.to_thread(_fetch_json, url)
+    payload = await _fetch_json_with_retries(url)
     hits = payload.get("hits", []) if isinstance(payload, dict) else []
     top_hits: list[dict[str, Any]] = []
 

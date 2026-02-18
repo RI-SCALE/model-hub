@@ -831,6 +831,8 @@ import micropip
 import json
 import traceback
 import js
+import asyncio
+from hypha_rpc import connect_to_server
 
 try:
     packages = json.loads('${packagesJson}')
@@ -839,8 +841,6 @@ try:
     print("Dependencies installed successfully.")
 except Exception as e:
     print(f"Error installing dependencies: {e}")
-
-from hypha_rpc import connect_to_server
 
 # Define the proxy function for compatibility with agents expecting js.hypha_chat_proxy
 _hypha_server_connection = None
@@ -858,7 +858,7 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
     if test_mode == "upstream-error":
       return json.dumps({"error": "simulated-upstream-error"})
 
-    # Prefer the JS-side proxy wrapper, which uses the app connection and timeout settings
+    # Prefer the JS-side proxy wrapper first.
     try:
       if hasattr(js, "globalThis") and getattr(js.globalThis, "hypha_chat_proxy", None):
         js_result = await asyncio.wait_for(
@@ -885,11 +885,15 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
       })
 
     server = _hypha_server_connection
-
     proxy = await server.get_service('${chatProxyServiceIdLiteral}', {"mode": "random", "timeout": 600})
 
-    result = await proxy.chat_completion(messages, tools, tool_choice, model)
+    result = await asyncio.wait_for(
+      proxy.chat_completion(messages, tools, tool_choice, model),
+      timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
+    )
     return json.dumps(result)
+  except asyncio.TimeoutError:
+    return json.dumps({"error": "bridge-timeout: proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
   except BaseException as e:
     print(f"DEBUG: Exception in hypha_chat_proxy bridge: {e}")
     traceback.print_exc()
@@ -1475,7 +1479,7 @@ async def _chat_wrapper():
         (inspect.isfunction(func) or inspect.iscoroutinefunction(func))
         and getattr(func, '__module__', None) == '__main__'
             )
-            if is_user_function and not name.startswith('_') and name not in ['send_response', '_chat_wrapper', 'exit', 'quit', 'get_ipython', 'open', 'print', 'help', 'AsyncOpenAI', 'connect_to_server', 'traceback', 'inspect', 'json', 'js', 'asyncio', 'hypha_chat_proxy']:
+            if is_user_function and not name.startswith('_') and name not in ['send_response', '_chat_wrapper', 'exit', 'quit', 'get_ipython', 'open', 'print', 'help', 'AsyncOpenAI', 'traceback', 'inspect', 'json', 'js', 'asyncio', 'hypha_chat_proxy']:
                 doc = inspect.getdoc(func) or "No description provided."
 
                 try:
