@@ -50,7 +50,7 @@ async def setup() -> dict[str, Any]:
         _client = None
         return {"ok": False, "error": "OPENAI_API_KEY is missing"}
 
-    _client = AsyncOpenAI(api_key=key)
+    _client = AsyncOpenAI(api_key=key, timeout=600.0, max_retries=2)
     logger.info("OpenAI client initialized")
     return {"ok": True}
 
@@ -76,6 +76,7 @@ async def chat_completion(
             kwargs["tools"] = tools
         if tool_choice:
             kwargs["tool_choice"] = tool_choice
+        kwargs["timeout"] = 600.0
 
         response = await _client.chat.completions.create(**kwargs)
         return json.loads(response.model_dump_json())

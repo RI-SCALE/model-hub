@@ -55,6 +55,7 @@ jobs:
         run: pnpm build
         env:
           CI: false
+          REACT_APP_CHAT_PROXY_APP_ID: chat-proxy
 
       - name: Download and extract chatbot static files
         run: |

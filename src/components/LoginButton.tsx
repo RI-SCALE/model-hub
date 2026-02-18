@@ -122,7 +122,7 @@ export default function LoginButton({ className = '' }: LoginButtonProps) {
       await connect({
         server_url: serverUrl,
         token: token,
-        method_timeout: 300
+        method_timeout: 600
       });
 
       // Redirect after successful connect (check server/user state from store)
@@ -151,7 +151,7 @@ export default function LoginButton({ className = '' }: LoginButtonProps) {
           await connect({
             server_url: serverUrl,
             token: token,
-            method_timeout: 300
+            method_timeout: 600
           });
           // Redirection is handled by the effect watching `server` state below.
         } catch (error) {

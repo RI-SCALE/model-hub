@@ -51,3 +51,9 @@ python3 scripts/diagnose_hub.py
 
 ### Static Site Hosting ("Open App")
 Artifacts containing an `index.html` file will display an **"Open App"** button in the interface. This opens the static site directly in the browser, served via Hypha.
+
+## Chat Proxy CI/CD Blueprint
+
+For branch-safe dev deployments, production-only app IDs, health monitoring, and rollback automation, see:
+
+- `docs/chat-proxy-cicd.md`

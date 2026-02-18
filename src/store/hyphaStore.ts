@@ -110,7 +110,10 @@ export const useHyphaStore = create<HyphaState>((set, get) => ({
     set({ isConnecting: true, error: null });
     try {
       const client = hyphaWebsocketClient;
-      const server = await client.connectToServer(config);
+      const server = await client.connectToServer({
+        method_timeout: config.method_timeout ?? 600,
+        ...config,
+      });
       
       if (!server) {
         throw new Error('Failed to connect to server');

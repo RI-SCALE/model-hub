@@ -338,7 +338,7 @@ const Upload: React.FC<UploadProps> = ({ artifactId }) => {
             
             const newContent = yaml.dump(manifest);
             
-            return nodes.map(f => f.path === rdfFile!.path ? { 
+            return nodes.map(f => f.path === rdfFile.path ? { 
                ...f, 
                content: newContent,
                edited: true,
