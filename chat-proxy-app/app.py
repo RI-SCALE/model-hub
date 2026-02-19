@@ -1,10 +1,10 @@
+import asyncio
 import json
 import logging
 import os
-import asyncio
-from urllib.parse import quote
-from urllib.request import urlopen
 from typing import Any
+from urllib.parse import quote
+import httpx
 
 from hypha_rpc import api
 from openai import AsyncOpenAI
@@ -23,12 +23,6 @@ def _build_archive_url(base_url: str, query: str) -> str:
     return f"{base_url}?query={encoded}"
 
 
-def _fetch_json(url: str) -> dict[str, Any]:
-    with urlopen(url, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    return payload if isinstance(payload, dict) else {}
-
-
 async def _fetch_json_with_retries(
     url: str,
     *,
@@ -36,9 +30,19 @@ async def _fetch_json_with_retries(
     retry_delay_seconds: float = 1.0,
 ) -> dict[str, Any]:
     last_error: Exception | None = None
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "ri-scale-model-hub-chat-proxy/1.0",
+    }
     for attempt in range(1, attempts + 1):
         try:
-            return await asyncio.to_thread(_fetch_json, url)
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, dict):
+                    return payload
+                raise RuntimeError("Archive response was not a JSON object")
         except Exception as exp:
             last_error = exp
             logger.warning(
@@ -67,13 +71,19 @@ async def search_datasets(
     top_hits: list[dict[str, Any]] = []
 
     for item in hits[: max(1, int(limit))]:
-        title = item.get("title") or item.get("name") or item.get("accession") or "Untitled"
+        title = (
+            item.get("title") or item.get("name") or item.get("accession") or "Untitled"
+        )
         accession = item.get("accession") or item.get("id") or ""
         top_hits.append(
             {
                 "title": title,
                 "accession": accession,
-                "url": f"https://www.ebi.ac.uk/bioimage-archive/{accession}" if accession else None,
+                "url": (
+                    f"https://www.ebi.ac.uk/bioimage-archive/{accession}"
+                    if accession
+                    else None
+                ),
             }
         )
 

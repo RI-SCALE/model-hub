@@ -883,12 +883,18 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
     try:
       for _ in range(40):
         bridge = None
+        bridge = getattr(js, "__pyodide_chat_proxy_bridge", None)
         if hasattr(js, "globalThis"):
-          bridge = getattr(js.globalThis, "hypha_chat_proxy", None)
+          if bridge is None:
+            bridge = getattr(js.globalThis, "hypha_chat_proxy", None)
+          if bridge is None:
+            bridge = getattr(js.globalThis, "__pyodide_chat_proxy_bridge", None)
         if bridge is None:
           bridge = getattr(js, "hypha_chat_proxy", None)
         if bridge is None and hasattr(js, "window"):
           bridge = getattr(js.window, "hypha_chat_proxy", None)
+        if bridge is None and hasattr(js, "window"):
+          bridge = getattr(js.window, "__pyodide_chat_proxy_bridge", None)
 
         if bridge is not None:
           js_result = await asyncio.wait_for(
@@ -917,7 +923,7 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
       })
 
     server = _hypha_server_connection
-    proxy = await server.get_service('${chatProxyServiceIdLiteral}', {"mode": "random", "timeout": 600})
+    proxy = await server.get_service('${chatProxyServiceIdLiteral}', {"timeout": 600})
 
     result = await asyncio.wait_for(
       proxy.chat_completion(messages, tools, tool_choice, model),
@@ -1107,7 +1113,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
              for (let attempt = 1; attempt <= 3; attempt += 1) {
                try {
                  const resolved: any = await withTimeout(
-                   server.getService(CHAT_PROXY_SERVICE_ID, { mode: 'random', timeout: 600 }),
+                   server.getService(CHAT_PROXY_SERVICE_ID, { timeout: 600 }),
                    CHAT_PROXY_RESOLVE_TIMEOUT_MS,
                    `service resolution for ${CHAT_PROXY_SERVICE_ID} (attempt ${attempt})`
                  );
@@ -1172,6 +1178,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
           return JSON.stringify({ error: errorMsg });
         }
       };
+      (globalThis as any).__pyodide_chat_proxy_bridge = (globalThis as any).hypha_chat_proxy;
 
       (globalThis as any).bioimage_archive_search = async (kind: string, query: string, limit: number = 10) => {
         try {
@@ -1179,7 +1186,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
             if (!forceRefresh && cachedChatProxyService) {
               return cachedChatProxyService;
             }
-            const resolved: any = await server.getService(CHAT_PROXY_SERVICE_ID, { mode: 'random', timeout: 600 });
+            const resolved: any = await server.getService(CHAT_PROXY_SERVICE_ID, { timeout: 600 });
             cachedChatProxyService = resolved;
             return resolved;
           };
@@ -1221,6 +1228,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         // Clear it if server disconnects to avoid stale calls
       (globalThis as any).__chatProxyServiceId = undefined;
         (globalThis as any).hypha_chat_proxy = undefined;
+        (globalThis as any).__pyodide_chat_proxy_bridge = undefined;
         (globalThis as any).bioimage_archive_search = undefined;
     }
   }, [server]);
