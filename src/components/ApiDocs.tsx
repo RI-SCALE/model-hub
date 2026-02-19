@@ -65,8 +65,8 @@ fetch("https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10
         return `import requests
 
 # Get details for a specific model
-model_id = "ri-scale/artifacts/model-example999" # Example ID
-response = requests.get(f"https://hypha.aicell.io/{model_id}")
+model_id = "model-example999" # Example ID
+response = requests.get(f"https://hypha.aicell.io/ri-scale/artifacts/{model_id}")
 details = response.json()
 
 print(details['manifest'])`;
@@ -90,10 +90,10 @@ fetch(\`https://hypha.aicell.io/\${modelId}\`)
       case 'python':
         return `import requests
 
-model_id = "ri-scale/artifacts/model-example999"
+model_id = "model-example999"
 file_path = "rdf.yaml"
 
-url = f"https://hypha.aicell.io/{model_id}/files/{file_path}"
+url = f"https://hypha.aicell.io/ri-scale/artifacts/{model_id}/files/{file_path}"
 response = requests.get(url)
 
 if response.status_code == 200:
@@ -102,10 +102,10 @@ if response.status_code == 200:
 else:
     print(f"File not found: {response.status_code}")`;
       case 'javascript':
-        return `const modelId = "ri-scale/artifacts/model-example999";
+        return `const modelId = "model-example999";
 const filePath = "rdf.yaml";
 
-fetch(\`https://hypha.aicell.io/\${modelId}/files/\${filePath}\`)
+fetch(\`https://hypha.aicell.io/ri-scale/artifacts/\${modelId}/files/\${filePath}\`)
   .then(res => {
     if (res.ok) return res.blob();
     console.error("File download failed", res.status);
