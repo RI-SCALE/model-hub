@@ -146,6 +146,7 @@ const AgentPage: React.FC = () => {
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [hasCopied, setHasCopied] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const saveQueueRef = useRef<Promise<string | null>>(Promise.resolve(null));
   const agentProgressRef = useRef<string | null>(null);
   const agentProgressDetailsRef = useRef<string[]>([]);
@@ -675,6 +676,18 @@ const AgentPage: React.FC = () => {
       }
   };
 
+  const copyTextWithFeedback = async (text: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => {
+        setCopiedKey(prev => (prev === key ? null : prev));
+      }, 1500);
+    } catch (copyError) {
+      console.error('Failed to copy text:', copyError);
+    }
+  };
+
   // Initialize kernel if not ready
   useEffect(() => {
     if (!isKernelReady && kernelStatus === 'idle') {
@@ -1055,6 +1068,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     if (server) {
       console.log("AgentPage: Registering hypha_chat_proxy...");
       (globalThis as any).__chatProxyServiceId = CHAT_PROXY_SERVICE_ID;
+      let cachedChatProxyService: any = null;
       (globalThis as any).hypha_chat_proxy = async (messages: string | any, tools: string | any, tool_choice: string | any, model: string) => {
         try {
            const testMode = (globalThis as any).__chatProxyTestMode;
@@ -1084,6 +1098,34 @@ print("DEBUG: hypha_chat_proxy bridge ready")
              });
            };
 
+           const resolveChatProxyService = async (forceRefresh: boolean = false) => {
+             if (!forceRefresh && cachedChatProxyService) {
+               return cachedChatProxyService;
+             }
+
+             let lastError: Error | null = null;
+             for (let attempt = 1; attempt <= 3; attempt += 1) {
+               try {
+                 const resolved: any = await withTimeout(
+                   server.getService(CHAT_PROXY_SERVICE_ID, { mode: 'random', timeout: 600 }),
+                   CHAT_PROXY_RESOLVE_TIMEOUT_MS,
+                   `service resolution for ${CHAT_PROXY_SERVICE_ID} (attempt ${attempt})`
+                 );
+                 if (!resolved || typeof resolved.chat_completion !== 'function') {
+                   throw new Error('Proxy service found but has no chat_completion method.');
+                 }
+                 cachedChatProxyService = resolved;
+                 return resolved;
+               } catch (resolveError: any) {
+                 lastError = resolveError instanceof Error ? resolveError : new Error(String(resolveError));
+                 if (attempt < 3) {
+                   await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+                 }
+               }
+             }
+             throw lastError || new Error('Unable to resolve chat proxy service.');
+           };
+
            console.log("AgentPage: hypha_chat_proxy called with model:", model);
            const args = {
               messages: typeof messages === 'string' ? JSON.parse(messages) : messages,
@@ -1093,11 +1135,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
            };
            
              console.log("AgentPage: Resolving chat proxy service...");
-             const proxy: any = await withTimeout(
-               server.getService(CHAT_PROXY_SERVICE_ID, { mode: 'random', timeout: 600 }),
-               CHAT_PROXY_RESOLVE_TIMEOUT_MS,
-               `service resolution for ${CHAT_PROXY_SERVICE_ID}`
-             );
+             const proxy: any = await resolveChatProxyService();
 
              if (!proxy) {
               throw new Error('Unable to resolve chat proxy service.');
@@ -1109,11 +1147,21 @@ print("DEBUG: hypha_chat_proxy bridge ready")
                throw new Error("Proxy service found but has no chat_completion method.");
            }
 
-           const result = await withTimeout(
-             proxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
-             CHAT_PROXY_COMPLETION_TIMEOUT_MS,
-             `chat_completion response from ${CHAT_PROXY_SERVICE_ID}`
-           );
+           let result: any;
+           try {
+             result = await withTimeout(
+               proxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
+               CHAT_PROXY_COMPLETION_TIMEOUT_MS,
+               `chat_completion response from ${CHAT_PROXY_SERVICE_ID}`
+             );
+           } catch (primaryError) {
+             const refreshedProxy: any = await resolveChatProxyService(true);
+             result = await withTimeout(
+               refreshedProxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
+               CHAT_PROXY_COMPLETION_TIMEOUT_MS,
+               `chat_completion response retry from ${CHAT_PROXY_SERVICE_ID}`
+             );
+           }
            console.log("AgentPage: chat_completion result:", result);
            
            return JSON.stringify(result);
@@ -1127,7 +1175,16 @@ print("DEBUG: hypha_chat_proxy bridge ready")
 
       (globalThis as any).bioimage_archive_search = async (kind: string, query: string, limit: number = 10) => {
         try {
-          const proxy = await server.getService(CHAT_PROXY_SERVICE_ID, { mode: 'random', timeout: 600 });
+          const resolveChatProxyService = async (forceRefresh: boolean = false) => {
+            if (!forceRefresh && cachedChatProxyService) {
+              return cachedChatProxyService;
+            }
+            const resolved: any = await server.getService(CHAT_PROXY_SERVICE_ID, { mode: 'random', timeout: 600 });
+            cachedChatProxyService = resolved;
+            return resolved;
+          };
+
+          let proxy = await resolveChatProxyService();
           if (!proxy) {
             throw new Error('Unable to resolve chat proxy service.');
           }
@@ -1135,13 +1192,23 @@ print("DEBUG: hypha_chat_proxy bridge ready")
             if (typeof proxy.search_datasets !== 'function') {
               throw new Error('Chat proxy is missing search_datasets. Please redeploy chat-proxy app.');
             }
-            return await proxy.search_datasets(query, limit);
+            try {
+              return await proxy.search_datasets(query, limit);
+            } catch {
+              proxy = await resolveChatProxyService(true);
+              return await proxy.search_datasets(query, limit);
+            }
           }
           if (kind === 'images') {
             if (typeof proxy.search_images !== 'function') {
               throw new Error('Chat proxy is missing search_images. Please redeploy chat-proxy app.');
             }
-            return await proxy.search_images(query, limit);
+            try {
+              return await proxy.search_images(query, limit);
+            } catch {
+              proxy = await resolveChatProxyService(true);
+              return await proxy.search_images(query, limit);
+            }
           }
           throw new Error(`Unsupported search kind: ${kind}`);
         } catch (e: any) {
@@ -2099,6 +2166,17 @@ await _chat_wrapper()
                             {msg.content}
                         </ReactMarkdown>
                         </div>
+                        {msg.role !== 'user' && (
+                            <div className="mt-2 pt-2 border-t border-gray-100 flex justify-end">
+                                <button
+                                  onClick={() => copyTextWithFeedback(msg.content, `msg-${msg.id}`)}
+                                  className="text-xs text-ri-orange hover:underline inline-flex items-center gap-1"
+                                >
+                                  {copiedKey === `msg-${msg.id}` ? <FiCheck size={12} /> : <FiCopy size={12} />}
+                                  {copiedKey === `msg-${msg.id}` ? 'Copied' : 'Copy output'}
+                                </button>
+                            </div>
+                        )}
                         {expandable && (
                             <div className="mt-2 pt-2 border-t border-gray-100 flex justify-end">
                                 <button
@@ -2119,6 +2197,18 @@ await _chat_wrapper()
                                 </button>
                                 {progressExpanded && (
                                   <div className="mt-2 max-h-40 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-2 space-y-1">
+                                    <div className="flex justify-end mb-1">
+                                      <button
+                                        onClick={() => copyTextWithFeedback([
+                                          msg.progressTrace?.summary || '',
+                                          ...(msg.progressTrace?.details || []),
+                                        ].filter(Boolean).join('\n'), `progress-${msg.id}`)}
+                                        className="text-xs text-ri-orange hover:underline inline-flex items-center gap-1"
+                                      >
+                                        {copiedKey === `progress-${msg.id}` ? <FiCheck size={12} /> : <FiCopy size={12} />}
+                                        {copiedKey === `progress-${msg.id}` ? 'Copied' : 'Copy progress'}
+                                      </button>
+                                    </div>
                                     {msg.progressTrace?.summary && (
                                       <div className="text-[11px] text-gray-700 font-medium">
                                         {msg.progressTrace.summary}
@@ -2152,12 +2242,24 @@ await _chat_wrapper()
                           </div>
                           {agentProgressDetails.length > 0 && (
                             <div className="mt-2">
-                              <button
-                                onClick={() => setShowAgentProgressDetails(prev => !prev)}
-                                className="text-xs text-ri-orange hover:underline"
-                              >
-                                {showAgentProgressDetails ? 'Hide progress details' : 'Show progress details'}
-                              </button>
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  onClick={() => setShowAgentProgressDetails(prev => !prev)}
+                                  className="text-xs text-ri-orange hover:underline"
+                                >
+                                  {showAgentProgressDetails ? 'Hide progress details' : 'Show progress details'}
+                                </button>
+                                <button
+                                  onClick={() => copyTextWithFeedback([
+                                    agentProgress || '',
+                                    ...agentProgressDetails,
+                                  ].filter(Boolean).join('\n'), 'live-progress')}
+                                  className="text-xs text-ri-orange hover:underline inline-flex items-center gap-1"
+                                >
+                                  {copiedKey === 'live-progress' ? <FiCheck size={12} /> : <FiCopy size={12} />}
+                                  {copiedKey === 'live-progress' ? 'Copied' : 'Copy progress'}
+                                </button>
+                              </div>
                               {showAgentProgressDetails && (
                                 <div className="mt-2 max-h-32 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-2 space-y-1">
                                   {agentProgressDetails.map((detail, idx) => (
@@ -2177,11 +2279,24 @@ await _chat_wrapper()
                 {/* Kernel Logs Panel */}
                 {showLogs && (
                     <div className="w-80 bg-gray-900 text-white font-mono text-xs overflow-y-auto p-2 border-l border-gray-700 shadow-xl opacity-95">
-                        <div className="font-bold border-b border-gray-700 pb-2 mb-2 text-gray-400 flex justify-between">
+                        <div className="font-bold border-b border-gray-700 pb-2 mb-2 text-gray-400 flex items-center justify-between gap-2">
                             <span>KERNEL LOGS</span>
-                            <span className={kernelStatus === 'busy' ? 'text-green-400' : 'text-gray-500'}>
-                                {kernelStatus.toUpperCase()}
-                            </span>
+                            <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => copyTextWithFeedback(
+                                    kernelExecutionLog.map(log => `[${log.type}]${log.short_content || log.content}`).join('\n'),
+                                    'kernel-logs'
+                                  )}
+                                  className="text-[11px] text-gray-300 hover:text-white inline-flex items-center gap-1"
+                                  title="Copy kernel output"
+                                >
+                                  {copiedKey === 'kernel-logs' ? <FiCheck size={11} /> : <FiCopy size={11} />}
+                                  {copiedKey === 'kernel-logs' ? 'Copied' : 'Copy'}
+                                </button>
+                                <span className={kernelStatus === 'busy' ? 'text-green-400' : 'text-gray-500'}>
+                                    {kernelStatus.toUpperCase()}
+                                </span>
+                            </div>
                         </div>
                         {kernelExecutionLog.map((log, idx) => (
                             <div key={idx} className={`mb-1 break-all ${log.type === 'stderr' ? 'text-red-400' : log.type === 'error' ? 'text-red-500 font-bold' : 'text-gray-300'}`}>
