@@ -9,11 +9,15 @@ from scripts.chat_proxy_utils import (
 
 class ChatProxyUtilsTests(unittest.TestCase):
     def test_slugify_branch_name(self):
-        self.assertEqual(slugify_branch_name("feature/chat proxy"), "feature-chat-proxy")
+        self.assertEqual(
+            slugify_branch_name("feature/chat proxy"), "feature-chat-proxy"
+        )
         self.assertEqual(slugify_branch_name("___"), "branch")
 
     def test_make_dev_app_id(self):
-        app_id = make_dev_app_id("feature/super-long-branch-name-with-more-and-more-characters")
+        app_id = make_dev_app_id(
+            "feature/super-long-branch-name-with-more-and-more-characters"
+        )
         self.assertTrue(app_id.startswith("chat-proxy-dev-"))
         self.assertLessEqual(len(app_id), 63)
 

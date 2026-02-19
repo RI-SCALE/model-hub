@@ -1,6 +1,5 @@
 import re
 
-
 MAX_APP_ID_LENGTH = 63
 
 

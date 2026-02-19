@@ -1,4 +1,3 @@
-import json
 from typing import Any
 
 from hypha_rpc import api

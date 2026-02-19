@@ -28,9 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--token",
         default=(
-            os.environ.get("HYPHA_TOKEN")
-            or os.environ.get("RI_SCALE_TOKEN")
-            or ""
+            os.environ.get("HYPHA_TOKEN") or os.environ.get("RI_SCALE_TOKEN") or ""
         ),
     )
     parser.add_argument(
@@ -176,9 +174,15 @@ async def run_health_check(args: argparse.Namespace) -> int:
 
             for label, payload in (("datasets", datasets), ("images", images)):
                 if not isinstance(payload, dict):
-                    print(f"❌ {label} search returned non-dict payload: {type(payload)}")
+                    print(
+                        f"❌ {label} search returned non-dict payload: {type(payload)}"
+                    )
                     return 1
-                if "query" not in payload or "results" not in payload or "total" not in payload:
+                if (
+                    "query" not in payload
+                    or "results" not in payload
+                    or "total" not in payload
+                ):
                     print(f"❌ {label} search payload missing expected keys")
                     print(json.dumps(payload, indent=2))
                     return 1

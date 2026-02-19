@@ -1,6 +1,6 @@
 import json
-from urllib.parse import quote
 from typing import Any, Dict, List
+from urllib.parse import quote
 
 import httpx
 
@@ -75,13 +75,19 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
     top_hits: List[Dict[str, Any]] = []
 
     for item in hits[: max(1, limit)]:
-        title = item.get("title") or item.get("name") or item.get("accession") or "Untitled"
+        title = (
+            item.get("title") or item.get("name") or item.get("accession") or "Untitled"
+        )
         accession = item.get("accession") or item.get("id") or ""
         top_hits.append(
             {
                 "title": title,
                 "accession": accession,
-                "url": f"https://www.ebi.ac.uk/bioimage-archive/{accession}" if accession else None,
+                "url": (
+                    f"https://www.ebi.ac.uk/bioimage-archive/{accession}"
+                    if accession
+                    else None
+                ),
             }
         )
 
@@ -155,7 +161,7 @@ def explain_advanced_query_syntax() -> str:
         "Examples:\n"
         "1) confocal fluorescence microscopy\n"
         "2) confocal AND fluorescence AND microscopy\n"
-        "3) \"confocal fluorescence microscopy\"\n"
+        '3) "confocal fluorescence microscopy"\n'
         "4) microscopy AND (fluorescence OR confocal)\n"
         "5) microscopy AND NOT (fluorescence OR confocal)\n"
     )

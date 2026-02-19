@@ -30,7 +30,9 @@ def get_cli_entrypoint() -> list[str]:
 
 
 def parse_args() -> ArgumentParser:
-    parser = ArgumentParser(description="Deploy and optionally health-check chat-proxy app")
+    parser = ArgumentParser(
+        description="Deploy and optionally health-check chat-proxy app"
+    )
     parser.add_argument(
         "--app-id",
         default=os.environ.get("CHAT_PROXY_APP_ID", "chat-proxy-dev"),
@@ -154,7 +156,9 @@ def main() -> int:
             if second_health_exit != 0:
                 raise subprocess.CalledProcessError(second_health_exit, health_cmd)
 
-    print(f"✅ {args.app_id} installed and {'started' if not args.skip_start else 'not started'}")
+    print(
+        f"✅ {args.app_id} installed and {'started' if not args.skip_start else 'not started'}"
+    )
     print(f"Service ID expected by frontend: ri-scale/default@{args.app_id}")
     return 0
 
