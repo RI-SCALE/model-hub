@@ -9,9 +9,9 @@ jobs:
   monitor-and-rollback:
     runs-on: ubuntu-latest
     env:
-      HYPHA_SERVER_URL: ${{ secrets.HYPHA_SERVER_URL }}
-      HYPHA_WORKSPACE: ${{ secrets.HYPHA_WORKSPACE }}
-      HYPHA_TOKEN: ${{ secrets.HYPHA_TOKEN }}
+      HYPHA_SERVER_URL: ${{ secrets.HYPHA_SERVER_URL || secrets.RI_SCALE_SERVER_URL }}
+      HYPHA_WORKSPACE: ${{ secrets.HYPHA_WORKSPACE || 'ri-scale' }}
+      HYPHA_TOKEN: ${{ secrets.HYPHA_TOKEN || secrets.RI_SCALE_TOKEN }}
       PROD_APP_ID: chat-proxy
     steps:
       - name: Checkout
@@ -28,7 +28,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install hypha-rpc python-dotenv
-          python -m pip install git+https://github.com/oeway/hypha-apps-cli
+          python -m pip install pyyaml
+          git clone --depth 1 https://github.com/oeway/hypha-apps-cli ../hypha-apps-cli
+          python -m pip install -r ../hypha-apps-cli/requirements.txt
 
       - name: Production health check
         id: health

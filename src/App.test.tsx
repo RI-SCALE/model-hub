@@ -10,7 +10,7 @@ jest.mock('./App', () => {
   };
 });
 
-import App from './App';
+const App = require('./App').default;
 
 describe('App', () => {
   test('renders without crashing', () => {
