@@ -987,13 +987,62 @@ print("DEBUG: hypha_chat_proxy bridge ready")
 
         const isBioimageFinderScript =
           scriptContent.includes('search_datasets') &&
-          scriptContent.includes('search_images') &&
-          scriptContent.includes('BASE_SEARCH_URL');
+          scriptContent.includes('search_images');
 
         if (isBioimageFinderScript) {
           const bioimageProxyCompatibilityPatch = `
     import json
     import js
+    import httpx
+    from urllib.parse import quote
+
+    def _build_biostudies_url(query, limit):
+      encoded = quote(str(query), safe='"()[]{}:*?+-/')
+      bounded_limit = max(1, int(limit))
+      return f"https://www.ebi.ac.uk/biostudies/api/v1/BioImages/search?query={encoded}&page=1&pageSize={bounded_limit}"
+
+    async def _search_biostudies(kind, query, limit):
+      url = _build_biostudies_url(query, limit)
+      async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+
+      hits = payload.get("hits", []) if isinstance(payload, dict) else []
+      bounded_limit = max(1, int(limit))
+      top_hits = hits[:bounded_limit]
+
+      if kind == "images":
+        results = []
+        for item in top_hits:
+          results.append({
+            "id": item.get("id") or item.get("accession") or "",
+            "accession": item.get("accession") or "",
+            "title": item.get("title") or item.get("name") or item.get("accession") or "Untitled image",
+          })
+        return {
+          "query": query,
+          "url": url,
+          "total": payload.get("totalHits", len(hits)),
+          "results": results,
+          "source": "python-biostudies",
+        }
+
+      results = []
+      for item in top_hits:
+        accession = item.get("accession") or item.get("id") or ""
+        results.append({
+          "title": item.get("title") or item.get("name") or accession or "Untitled dataset",
+          "accession": accession,
+          "url": f"https://www.ebi.ac.uk/bioimage-archive/{accession}" if accession else None,
+        })
+      return {
+        "query": query,
+        "url": url,
+        "total": payload.get("totalHits", len(hits)),
+        "results": results,
+        "source": "python-biostudies",
+      }
 
     async def _ri_scale_proxy_search(kind, query, limit=10):
       bridge = None
@@ -1002,26 +1051,25 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         bridge = getattr(js.globalThis, "bioimage_archive_search", None)
       if bridge is None and hasattr(js, "window"):
         bridge = getattr(js.window, "bioimage_archive_search", None)
+
       if bridge is None:
-        raise RuntimeError("bioimage_archive_search bridge is unavailable")
+        print("DEBUG: bioimage_archive_search bridge missing; using python biostudies")
+        return await _search_biostudies(kind, query, limit)
 
-      result = await bridge(kind, query, int(limit))
-      if hasattr(result, "to_py"):
-        result = result.to_py()
-
-      if isinstance(result, str):
-        result = json.loads(result)
-
-      if not isinstance(result, dict):
-        raise RuntimeError("Proxy returned unsupported response type")
-
-      if result.get("error"):
-        print(f"DEBUG: archive proxy error: {result.get('error')}")
-        raise RuntimeError(str(result["error"]))
-
-      print(f"DEBUG: archive proxy {kind} query='{query}' limit={int(limit)} total={result.get('total')}")
-
-      return result
+      try:
+        result = await bridge(kind, query, int(limit))
+        if hasattr(result, "to_py"):
+          result = result.to_py()
+        if isinstance(result, str):
+          result = json.loads(result)
+        if not isinstance(result, dict):
+          raise RuntimeError("Proxy returned unsupported response type")
+        if result.get("error"):
+          raise RuntimeError(str(result["error"]))
+        return result
+      except Exception as proxy_exp:
+        print(f"DEBUG: archive proxy failed for {kind}; using python biostudies: {proxy_exp}")
+        return await _search_biostudies(kind, query, limit)
 
     async def search_datasets(query: str, limit: int = 10):
       return await _ri_scale_proxy_search("datasets", query, limit)
@@ -1029,7 +1077,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     async def search_images(query: str, limit: int = 10):
       return await _ri_scale_proxy_search("images", query, limit)
 
-    print("DEBUG: BioImage Finder tools routed via chat-proxy bridge")
+    print("DEBUG: BioImage Finder tools routed via stable biostudies search")
           `;
           await executeCode(bioimageProxyCompatibilityPatch);
         }
@@ -1211,6 +1259,64 @@ print("DEBUG: hypha_chat_proxy bridge ready")
 
       (globalThis as any).bioimage_archive_search = async (kind: string, query: string, limit: number = 10) => {
         try {
+          const directArchiveSearch = async (searchKind: 'datasets' | 'images', searchQuery: string, searchLimit: number) => {
+            const fetchJson = async (url: string) => {
+              const controller = new AbortController();
+              const timer = globalThis.setTimeout(() => controller.abort(), 30_000);
+              try {
+                const response = await fetch(url, {
+                  method: 'GET',
+                  headers: { Accept: 'application/json' },
+                  signal: controller.signal,
+                });
+                if (!response.ok) {
+                  throw new Error(`Archive direct fetch failed: ${response.status} ${response.statusText}`);
+                }
+                return await response.json();
+              } finally {
+                globalThis.clearTimeout(timer);
+              }
+            };
+
+            const toDatasetResults = (items: any[]) => items.map((item: any) => {
+              const accession = item?.accession || item?.id || '';
+              return {
+                title: item?.title || item?.name || accession || 'Untitled dataset',
+                accession,
+                url: accession ? `https://www.ebi.ac.uk/bioimage-archive/${accession}` : null,
+              };
+            });
+
+            const encodedQuery = encodeURIComponent(searchQuery);
+            const bioStudiesUrl = `https://www.ebi.ac.uk/biostudies/api/v1/BioImages/search?query=${encodedQuery}&page=1&pageSize=${Math.max(1, Number(searchLimit) || 10)}`;
+            const bioStudiesPayload = await fetchJson(bioStudiesUrl);
+            const bioStudiesHits = Array.isArray(bioStudiesPayload?.hits) ? bioStudiesPayload.hits : [];
+            const bioStudiesSliced = bioStudiesHits.slice(0, Math.max(1, Number(searchLimit) || 10));
+
+            if (searchKind === 'images') {
+              const results = bioStudiesSliced.map((item: any) => ({
+                id: item?.id || item?.accession || '',
+                accession: item?.accession || '',
+                title: item?.title || item?.name || item?.accession || 'Untitled image',
+              }));
+              return {
+                query: searchQuery,
+                url: bioStudiesUrl,
+                total: Number(bioStudiesPayload?.totalHits) || bioStudiesHits.length,
+                results,
+                source: 'biostudies-direct',
+              };
+            }
+
+            return {
+              query: searchQuery,
+              url: bioStudiesUrl,
+              total: Number(bioStudiesPayload?.totalHits) || bioStudiesHits.length,
+              results: toDatasetResults(bioStudiesSliced),
+              source: 'biostudies-direct',
+            };
+          };
+
           const resolveChatProxyService = async (forceRefresh: boolean = false) => {
             if (!forceRefresh && cachedChatProxyService) {
               return cachedChatProxyService;
@@ -1226,24 +1332,48 @@ print("DEBUG: hypha_chat_proxy bridge ready")
           }
           if (kind === 'datasets') {
             if (typeof proxy.search_datasets !== 'function') {
-              throw new Error('Chat proxy is missing search_datasets. Please redeploy chat-proxy app.');
+              return await directArchiveSearch('datasets', query, limit);
             }
             try {
-              return await proxy.search_datasets(query, limit);
+              const proxyResult = await proxy.search_datasets(query, limit);
+              if (proxyResult && typeof proxyResult === 'object' && 'error' in proxyResult && proxyResult.error) {
+                throw new Error(String(proxyResult.error));
+              }
+              return proxyResult;
             } catch {
-              proxy = await resolveChatProxyService(true);
-              return await proxy.search_datasets(query, limit);
+              try {
+                proxy = await resolveChatProxyService(true);
+                const refreshedResult = await proxy.search_datasets(query, limit);
+                if (refreshedResult && typeof refreshedResult === 'object' && 'error' in refreshedResult && refreshedResult.error) {
+                  throw new Error(String(refreshedResult.error));
+                }
+                return refreshedResult;
+              } catch {
+                return await directArchiveSearch('datasets', query, limit);
+              }
             }
           }
           if (kind === 'images') {
             if (typeof proxy.search_images !== 'function') {
-              throw new Error('Chat proxy is missing search_images. Please redeploy chat-proxy app.');
+              return await directArchiveSearch('images', query, limit);
             }
             try {
-              return await proxy.search_images(query, limit);
+              const proxyResult = await proxy.search_images(query, limit);
+              if (proxyResult && typeof proxyResult === 'object' && 'error' in proxyResult && proxyResult.error) {
+                throw new Error(String(proxyResult.error));
+              }
+              return proxyResult;
             } catch {
-              proxy = await resolveChatProxyService(true);
-              return await proxy.search_images(query, limit);
+              try {
+                proxy = await resolveChatProxyService(true);
+                const refreshedResult = await proxy.search_images(query, limit);
+                if (refreshedResult && typeof refreshedResult === 'object' && 'error' in refreshedResult && refreshedResult.error) {
+                  throw new Error(String(refreshedResult.error));
+                }
+                return refreshedResult;
+              } catch {
+                return await directArchiveSearch('images', query, limit);
+              }
             }
           }
           throw new Error(`Unsupported search kind: ${kind}`);

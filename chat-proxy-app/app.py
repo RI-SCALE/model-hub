@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _client: AsyncOpenAI | None = None
-BASE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts"
-BASE_IMAGE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts/image"
+BIOSTUDIES_SEARCH_URL = "https://www.ebi.ac.uk/biostudies/api/v1/BioImages/search"
 
 
-def _build_archive_url(base_url: str, query: str) -> str:
+def _build_biostudies_url(query: str, limit: int) -> str:
     encoded = quote(query, safe='"()[]{}:*?+-/\\')
-    return f"{base_url}?query={encoded}"
+    bounded_limit = max(1, int(limit))
+    return f"{BIOSTUDIES_SEARCH_URL}?query={encoded}&page=1&pageSize={bounded_limit}"
 
 
 async def _fetch_json_with_retries(
@@ -65,7 +65,7 @@ async def search_datasets(
     limit: int = 10,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    url = _build_archive_url(BASE_SEARCH_URL, query)
+    url = _build_biostudies_url(query, limit)
     payload = await _fetch_json_with_retries(url)
     hits = payload.get("hits", []) if isinstance(payload, dict) else []
     top_hits: list[dict[str, Any]] = []
@@ -90,8 +90,9 @@ async def search_datasets(
     return {
         "query": query,
         "url": url,
-        "total": len(hits),
+        "total": payload.get("totalHits", len(hits)),
         "results": top_hits,
+        "source": "biostudies",
     }
 
 
@@ -100,27 +101,28 @@ async def search_images(
     limit: int = 10,
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    url = _build_archive_url(BASE_IMAGE_SEARCH_URL, query)
+    url = _build_biostudies_url(query, limit)
     payload = await _fetch_json_with_retries(url)
     hits = payload.get("hits", []) if isinstance(payload, dict) else []
     top_hits: list[dict[str, Any]] = []
 
     for item in hits[: max(1, int(limit))]:
-        image_id = item.get("id") or item.get("_id") or ""
-        accession = item.get("accession") or item.get("study_accession") or ""
+        image_id = item.get("id") or item.get("accession") or ""
+        accession = item.get("accession") or ""
         top_hits.append(
             {
                 "id": image_id,
                 "accession": accession,
-                "title": item.get("title") or item.get("name") or image_id,
+                "title": item.get("title") or item.get("name") or accession or image_id,
             }
         )
 
     return {
         "query": query,
         "url": url,
-        "total": len(hits),
+        "total": payload.get("totalHits", len(hits)),
         "results": top_hits,
+        "source": "biostudies",
     }
 
 

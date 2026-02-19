@@ -16,7 +16,7 @@ async function openAgentChat(page: Page) {
 }
 
 test.describe('BioImage Finder real proxy reproduction', () => {
-  test('reproduces archive fallback and preserves progress after completion', async ({ page }) => {
+  test('returns dataset results and preserves progress after completion', async ({ page }) => {
     test.skip(!process.env.RUN_REAL_PROXY_REPRO, 'Set RUN_REAL_PROXY_REPRO=1 to run against the real proxy backend.');
     test.setTimeout(420_000);
 
@@ -26,74 +26,32 @@ test.describe('BioImage Finder real proxy reproduction', () => {
       (globalThis as any).__chatProxyTestMode = undefined;
     });
 
-    const archiveFallbackRegex = /archive bridge is currently unavailable|archive search bridge is currently unavailable|search service is currently unavailable|can't fetch live results|cannot fetch live results/;
-    const observedOutcomes: string[] = [];
+    const assistantHeaders = page.locator('span.text-xs.font-semibold');
+    const beforeAssistantCount = await assistantHeaders.count();
+
+    await input.fill(REAL_PROMPT);
+    await input.press('Enter');
+
+    await expect(page.getByText(REAL_PROMPT, { exact: true }).first()).toBeVisible({ timeout: 30_000 });
+
+    const startedAt = Date.now();
     let assistantMessage: ReturnType<typeof page.locator> | null = null;
-    let assistantText = '';
-    let observedTimeout = false;
-    let observedArchiveFallback = false;
-
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const assistantHeaders = page.locator('span.text-xs.font-semibold');
-      const beforeAssistantCount = await assistantHeaders.count();
-      const timeoutMarker = page.locator('text=Chat request timed out after');
-      const beforeTimeoutCount = await timeoutMarker.count();
-
-      await input.fill(REAL_PROMPT);
-      await input.press('Enter');
-
-      await expect(page.getByText(REAL_PROMPT, { exact: true })).toBeVisible({ timeout: 30_000 });
-
-      const startedAt = Date.now();
-      let attemptCompleted = false;
-      while (Date.now() - startedAt < RESPONSE_TIMEOUT) {
-        const afterAssistantCount = await assistantHeaders.count();
-        if (afterAssistantCount > beforeAssistantCount) {
-          assistantMessage = page
-            .locator('div.rounded-2xl')
-            .filter({ has: page.locator('span.text-xs.font-semibold') })
-            .last();
-          assistantText = ((await assistantMessage.innerText()) || '').toLowerCase();
-          attemptCompleted = true;
-          break;
-        }
-
-        const afterTimeoutCount = await timeoutMarker.count();
-        if (afterTimeoutCount > beforeTimeoutCount) {
-          observedOutcomes.push(`attempt ${attempt}: timeout`);
-          observedTimeout = true;
-          attemptCompleted = true;
-          break;
-        }
-
-        await page.waitForTimeout(1000);
-      }
-
-      if (!attemptCompleted) {
-        observedOutcomes.push(`attempt ${attempt}: no completion within timeout window`);
-        continue;
-      }
-
-      if (assistantText && archiveFallbackRegex.test(assistantText)) {
-        observedOutcomes.push(`attempt ${attempt}: archive fallback reproduced`);
-        observedArchiveFallback = true;
+    while (Date.now() - startedAt < RESPONSE_TIMEOUT) {
+      const afterAssistantCount = await assistantHeaders.count();
+      if (afterAssistantCount > beforeAssistantCount) {
+        assistantMessage = page
+          .locator('div.rounded-2xl')
+          .filter({ has: page.locator('span.text-xs.font-semibold') })
+          .last();
         break;
       }
-
-      if (assistantText) {
-        observedOutcomes.push(`attempt ${attempt}: assistant replied without archive fallback`);
-      }
+      await page.waitForTimeout(1000);
     }
 
-    expect(observedArchiveFallback || observedTimeout, `Outcomes: ${observedOutcomes.join('; ')}`).toBeTruthy();
-
-    if (!observedArchiveFallback) {
-      await expect(page.getByText('Chat request timed out after', { exact: false })).toBeVisible({ timeout: 30_000 });
-      return;
-    }
-
-    expect(assistantMessage, `Outcomes: ${observedOutcomes.join('; ')}`).not.toBeNull();
-    expect(assistantText, `Outcomes: ${observedOutcomes.join('; ')}`).toMatch(archiveFallbackRegex);
+    expect(assistantMessage).not.toBeNull();
+    const assistantText = ((await assistantMessage!.innerText()) || '').toLowerCase();
+    expect(assistantText).toMatch(/s-biad\d+|bioimage-archive\/[a-z0-9-]+/i);
+    expect(assistantText).not.toMatch(/archive bridge is currently unavailable|archive search bridge is currently unavailable|search service is currently unavailable/);
 
     const collapseButton = assistantMessage!.getByRole('button', { name: 'Collapse' });
     await expect(collapseButton).toBeVisible({ timeout: 30_000 });
@@ -105,6 +63,7 @@ test.describe('BioImage Finder real proxy reproduction', () => {
     await expect(assistantMessage!.getByText('Calling tool:', { exact: false }).first()).toBeVisible({ timeout: 30_000 });
 
     await page.getByRole('button', { name: 'Toggle Logs' }).click();
-    await expect(page.getByText(/AttributeError|to_py/).first()).toBeVisible({ timeout: 30_000 });
+    const logsText = (await page.locator('pre').allInnerTexts()).join('\n').toLowerCase();
+    expect(logsText).not.toMatch(/attributeerror|to_py|syntaxerror/);
   });
 });
