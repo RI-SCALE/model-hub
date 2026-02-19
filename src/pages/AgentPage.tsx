@@ -18,6 +18,10 @@ interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
+  progressTrace?: {
+    summary: string | null;
+    details: string[];
+  };
 }
 
 interface SessionInputDraftCache {
@@ -125,6 +129,7 @@ const AgentPage: React.FC = () => {
   const [showAgentProgressDetails, setShowAgentProgressDetails] = useState(false);
   const [typingSessionKey, setTypingSessionKey] = useState<string | null>(null);
   const [expandedMessageIds, setExpandedMessageIds] = useState<Record<string, boolean>>({});
+  const [expandedProgressMessageIds, setExpandedProgressMessageIds] = useState<Record<string, boolean>>({});
   
   // Sidebar State
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
@@ -142,6 +147,8 @@ const AgentPage: React.FC = () => {
   const [shareUrl, setShareUrl] = useState<string | null>(null);
   const [hasCopied, setHasCopied] = useState(false);
   const saveQueueRef = useRef<Promise<string | null>>(Promise.resolve(null));
+  const agentProgressRef = useRef<string | null>(null);
+  const agentProgressDetailsRef = useRef<string[]>([]);
   const [agentSystemPrompt, setAgentSystemPrompt] = useState<string | null>(null);
   const [agentWelcomeMessage, setAgentWelcomeMessage] = useState<string | null>(null);
   const [agentChatModel, setAgentChatModel] = useState<string>(DEFAULT_CHAT_MODEL);
@@ -1254,12 +1261,27 @@ print("DEBUG: hypha_chat_proxy bridge ready")
   };
 
   const updateAgentProgress = (summary: string, detail?: string) => {
+    agentProgressRef.current = summary;
     setAgentProgress(summary);
     if (!detail) return;
+    const nextDetails = [...agentProgressDetailsRef.current, detail].slice(-30);
+    agentProgressDetailsRef.current = nextDetails;
     setAgentProgressDetails(prev => {
       const next = [...prev, detail];
       return next.slice(-30);
     });
+  };
+
+  const buildProgressTraceSnapshot = () => {
+    const summary = agentProgressRef.current;
+    const details = [...agentProgressDetailsRef.current];
+    if (!summary && details.length === 0) {
+      return undefined;
+    }
+    return {
+      summary,
+      details,
+    };
   };
 
   const parseProgressFromStdout = (rawContent: string) => {
@@ -1345,7 +1367,9 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     setIsTyping(true);
     setTypingSessionKey(requestSessionKey);
     setAgentProgress('Preparing request...');
+    agentProgressRef.current = 'Preparing request...';
     setAgentProgressDetails([]);
+    agentProgressDetailsRef.current = [];
     setShowAgentProgressDetails(false);
 
     const requestStartedAt = Date.now();
@@ -1715,11 +1739,13 @@ await _chat_wrapper()
         }
 
         const responseText = pythonResponse;
+        const progressTrace = buildProgressTraceSnapshot();
         const responseMessage: Message = {
             id: (Date.now() + 1).toString(),
             role: 'assistant',
             content: responseText,
             timestamp: new Date(),
+          progressTrace,
         };
         const finalConversation = [...conversationWithUser, responseMessage];
         if (activeSessionId) {
@@ -2021,7 +2047,9 @@ await _chat_wrapper()
                 {messages.map((msg) => (
                   (() => {
                     const expandable = isMessageExpandable(msg);
-                    const expanded = Boolean(expandedMessageIds[msg.id]);
+                    const expanded = expandedMessageIds[msg.id] ?? msg.role === 'assistant';
+                    const hasStoredProgress = Boolean(msg.progressTrace && (msg.progressTrace.summary || msg.progressTrace.details.length > 0));
+                    const progressExpanded = Boolean(expandedProgressMessageIds[msg.id]);
                     return (
                     <div
                     key={msg.id}
@@ -2069,6 +2097,30 @@ await _chat_wrapper()
                                 >
                                   {expanded ? 'Collapse' : 'Expand full output'}
                                 </button>
+                            </div>
+                        )}
+                        {hasStoredProgress && (
+                            <div className="mt-2 pt-2 border-t border-gray-100">
+                                <button
+                                  onClick={() => setExpandedProgressMessageIds(prev => ({ ...prev, [msg.id]: !progressExpanded }))}
+                                  className="text-xs text-ri-orange hover:underline"
+                                >
+                                  {progressExpanded ? 'Hide generation progress' : 'Show generation progress'}
+                                </button>
+                                {progressExpanded && (
+                                  <div className="mt-2 max-h-40 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-2 space-y-1">
+                                    {msg.progressTrace?.summary && (
+                                      <div className="text-[11px] text-gray-700 font-medium">
+                                        {msg.progressTrace.summary}
+                                      </div>
+                                    )}
+                                    {(msg.progressTrace?.details || []).map((detail, idx) => (
+                                      <div key={`${msg.id}-progress-${idx}-${detail.slice(0, 24)}`} className="text-[11px] text-gray-600 font-mono break-all">
+                                        {detail}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                             </div>
                         )}
                         <div className={`text-[10px] mt-2 text-right opacity-60 ${msg.role === 'user' ? 'text-gray-300' : 'text-gray-400'}`}>
