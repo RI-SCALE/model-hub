@@ -12,7 +12,8 @@ jobs:
     env:
       HYPHA_SERVER_URL: ${{ secrets.HYPHA_SERVER_URL || secrets.RI_SCALE_SERVER_URL }}
       HYPHA_WORKSPACE: ${{ secrets.HYPHA_WORKSPACE || 'ri-scale' }}
-      HYPHA_TOKEN: ${{ secrets.HYPHA_TOKEN || secrets.RI_SCALE_TOKEN }}
+      RI_SCALE_TOKEN: ${{ secrets.RI_SCALE_TOKEN }}
+      HYPHA_TOKEN: ${{ secrets.RI_SCALE_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4

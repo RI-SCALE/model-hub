@@ -14,7 +14,8 @@ jobs:
     env:
       HYPHA_SERVER_URL: ${{ secrets.HYPHA_SERVER_URL || secrets.RI_SCALE_SERVER_URL }}
       HYPHA_WORKSPACE: ${{ secrets.HYPHA_WORKSPACE || 'ri-scale' }}
-      HYPHA_TOKEN: ${{ secrets.HYPHA_TOKEN || secrets.RI_SCALE_TOKEN }}
+      RI_SCALE_TOKEN: ${{ secrets.RI_SCALE_TOKEN }}
+      HYPHA_TOKEN: ${{ secrets.RI_SCALE_TOKEN }}
       PROD_APP_ID: chat-proxy
     steps:
       - name: Checkout
