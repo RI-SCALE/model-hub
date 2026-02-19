@@ -881,22 +881,41 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
     # Prefer the JS-side proxy wrapper first.
     # Wait for registration and avoid Python websocket fallback (known to be flaky in pyodide).
     try:
+      msg_count = 0
+      try:
+        msg_count = len(json.loads(messages_json)) if messages_json else 0
+      except Exception:
+        msg_count = -1
       for _ in range(40):
         bridge = None
+        bridge_source = None
         bridge = getattr(js, "__pyodide_chat_proxy_bridge", None)
+        if bridge is not None:
+          bridge_source = "js.__pyodide_chat_proxy_bridge"
         if hasattr(js, "globalThis"):
           if bridge is None:
             bridge = getattr(js.globalThis, "hypha_chat_proxy", None)
+            if bridge is not None:
+              bridge_source = "js.globalThis.hypha_chat_proxy"
           if bridge is None:
             bridge = getattr(js.globalThis, "__pyodide_chat_proxy_bridge", None)
+            if bridge is not None:
+              bridge_source = "js.globalThis.__pyodide_chat_proxy_bridge"
         if bridge is None:
           bridge = getattr(js, "hypha_chat_proxy", None)
+          if bridge is not None:
+            bridge_source = "js.hypha_chat_proxy"
         if bridge is None and hasattr(js, "window"):
           bridge = getattr(js.window, "hypha_chat_proxy", None)
+          if bridge is not None:
+            bridge_source = "js.window.hypha_chat_proxy"
         if bridge is None and hasattr(js, "window"):
           bridge = getattr(js.window, "__pyodide_chat_proxy_bridge", None)
+          if bridge is not None:
+            bridge_source = "js.window.__pyodide_chat_proxy_bridge"
 
         if bridge is not None:
+          print(f"DEBUG: Using JS chat proxy bridge via {bridge_source}; messages={msg_count}; model={model}")
           js_result = await asyncio.wait_for(
             bridge(messages_json, tools_json, tool_choice_json, model),
             timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
@@ -905,7 +924,7 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
             return js_result
           return str(js_result)
         await asyncio.sleep(0.25)
-      print("DEBUG: JS proxy wrapper not ready after wait; falling back to Python bridge")
+      print(f"DEBUG: JS proxy wrapper not ready after wait; falling back to Python bridge; messages={msg_count}; model={model}")
     except asyncio.TimeoutError:
       return json.dumps({"error": "bridge-timeout: JS proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
     except BaseException as js_exp:
@@ -924,11 +943,13 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
 
     server = _hypha_server_connection
     proxy = await server.get_service('${chatProxyServiceIdLiteral}', {"timeout": 600})
+    print("DEBUG: Python fallback resolved chat-proxy service")
 
     result = await asyncio.wait_for(
       proxy.chat_completion(messages, tools, tool_choice, model),
       timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
     )
+    print("DEBUG: Python fallback chat_completion returned successfully")
     return json.dumps(result)
   except asyncio.TimeoutError:
     return json.dumps({"error": "bridge-timeout: proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
@@ -975,7 +996,12 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     import js
 
     async def _ri_scale_proxy_search(kind, query, limit=10):
-      bridge = getattr(js.globalThis, "bioimage_archive_search", None)
+      bridge = None
+      bridge = getattr(js, "bioimage_archive_search", None)
+      if bridge is None and hasattr(js, "globalThis"):
+        bridge = getattr(js.globalThis, "bioimage_archive_search", None)
+      if bridge is None and hasattr(js, "window"):
+        bridge = getattr(js.window, "bioimage_archive_search", None)
       if bridge is None:
         raise RuntimeError("bioimage_archive_search bridge is unavailable")
 
@@ -990,7 +1016,10 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         raise RuntimeError("Proxy returned unsupported response type")
 
       if result.get("error"):
+        print(f"DEBUG: archive proxy error: {result.get('error')}")
         raise RuntimeError(str(result["error"]))
+
+      print(f"DEBUG: archive proxy {kind} query='{query}' limit={int(limit)} total={result.get('total')}")
 
       return result
 
