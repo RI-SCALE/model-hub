@@ -1,0 +1,105 @@
+name: Chat Proxy Dev Deploy
+
+on:
+  push:
+    branches-ignore:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy-and-test-dev:
+    runs-on: ubuntu-latest
+    env:
+      HYPHA_SERVER_URL: ${{ secrets.HYPHA_SERVER_URL }}
+      HYPHA_WORKSPACE: ${{ secrets.HYPHA_WORKSPACE }}
+      HYPHA_TOKEN: ${{ secrets.HYPHA_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install hypha-rpc python-dotenv
+          python -m pip install git+https://github.com/oeway/hypha-apps-cli
+
+      - name: Compute branch-specific app ids
+        id: ids
+        run: |
+          BRANCH_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
+          APP_ID=$(python - <<'PY'
+from scripts.chat_proxy_utils import make_dev_app_id
+import os
+print(make_dev_app_id(os.environ['BRANCH_NAME']))
+PY
+)
+          DUMMY_APP_ID=$(python - <<'PY'
+from scripts.chat_proxy_utils import make_dev_app_id
+import os
+print(make_dev_app_id(os.environ['BRANCH_NAME'], prefix='chat-proxy-dev-dummy'))
+PY
+)
+          echo "app_id=${APP_ID}" >> $GITHUB_OUTPUT
+          echo "dummy_app_id=${DUMMY_APP_ID}" >> $GITHUB_OUTPUT
+        env:
+          BRANCH_NAME: "${{ github.head_ref || github.ref_name }}"
+
+      - name: Deploy dummy proxy app
+        run: |
+          python scripts/deploy_chat_proxy.py \
+            --app-id "${{ steps.ids.outputs.dummy_app_id }}" \
+            --source chat-proxy-app/dummy_app.py \
+            --non-fatal-start \
+            --health-check \
+            --expected-substring "SYSTEM ONLINE (dummy)" \
+            --model gpt-5-mini
+
+      - name: Cleanup dummy proxy app
+        if: always()
+        run: |
+          python -m hypha_apps_cli stop-all-instances --app-id "${{ steps.ids.outputs.dummy_app_id }}" || true
+          python -m hypha_apps_cli uninstall --app-id "${{ steps.ids.outputs.dummy_app_id }}" || true
+
+      - name: Deploy dev proxy app
+        run: |
+          python scripts/deploy_chat_proxy.py \
+            --app-id "${{ steps.ids.outputs.app_id }}" \
+            --non-fatal-start \
+            --health-check \
+            --model gpt-5-mini
+
+      - name: Verify archive search bridge on dev app
+        run: |
+          python scripts/test_chat_proxy.py \
+            --app-id "${{ steps.ids.outputs.app_id }}" \
+            --model gpt-5-mini \
+            --timeout 120 \
+            --check-search \
+            --search-query "mouse tumor" \
+            --search-limit 5
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browser
+        run: pnpm playwright install --with-deps chromium
+
+      - name: Agent chat e2e against dev app
+        env:
+          REACT_APP_CHAT_PROXY_APP_ID: ${{ steps.ids.outputs.app_id }}
+        run: pnpm playwright test e2e/agent-chat-timeout.spec.ts e2e/agent-chat-resilience.spec.ts --reporter=line

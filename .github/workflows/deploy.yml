@@ -30,9 +30,9 @@ jobs:
           node-version: '20'
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
+          version: 9
           run_install: false
 
       - name: Get pnpm store directory
@@ -55,6 +55,7 @@ jobs:
         run: pnpm build
         env:
           CI: false
+          REACT_APP_CHAT_PROXY_APP_ID: chat-proxy
 
       - name: Download and extract chatbot static files
         run: |

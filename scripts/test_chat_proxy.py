@@ -1,171 +1,212 @@
+import argparse
 import asyncio
 import base64
 import json
 import os
 import traceback
 
-from dotenv import load_dotenv
 from hypha_rpc import connect_to_server
 
-load_dotenv(
-    override=True
-)  # Load from .env in current directory, which should have the necessary tokens and config
 
-# Configuration
-SERVER_URL = os.environ.get("HYPHA_SERVER_URL", "https://hypha.aicell.io")
-# If HYPHA_TOKEN is not set, we can try to connect anonymously if server allows,
-# or specific workspace requires token. Start script assumes token.
-TOKEN = os.environ.get("RI_SCALE_TOKEN")
-print(f"Using token: {'Yes' if TOKEN else 'No'}")
+def decode_jwt_payload(token: str) -> dict:
+    payload_part = token.split(".")[1]
+    padding = "=" * (-len(payload_part) % 4)
+    decoded_bytes = base64.urlsafe_b64decode(payload_part + padding)
+    return json.loads(decoded_bytes)
 
 
-if TOKEN:
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Health-check a Hypha chat-proxy app")
+    parser.add_argument(
+        "--server-url",
+        default=os.environ.get("HYPHA_SERVER_URL", "https://hypha.aicell.io"),
+    )
+    parser.add_argument(
+        "--workspace",
+        default=os.environ.get("HYPHA_WORKSPACE", "ri-scale"),
+    )
+    parser.add_argument(
+        "--token",
+        default=(
+            os.environ.get("HYPHA_TOKEN")
+            or os.environ.get("RI_SCALE_TOKEN")
+            or ""
+        ),
+    )
+    parser.add_argument(
+        "--app-id",
+        default=(
+            os.environ.get("HYPHA_APP_ID")
+            or os.environ.get("CHAT_PROXY_APP_ID")
+            or "chat-proxy-dev"
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        default="gpt-5-mini",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=60,
+    )
+    parser.add_argument(
+        "--prompt",
+        default="Hello! Please reply with 'SYSTEM ONLINE'.",
+    )
+    parser.add_argument(
+        "--expected-substring",
+        default="",
+    )
+    parser.add_argument(
+        "--check-search",
+        action="store_true",
+        help="Also verify search_datasets/search_images tool bridge",
+    )
+    parser.add_argument(
+        "--search-query",
+        default="cancer",
+        help="Query used when --check-search is enabled",
+    )
+    parser.add_argument(
+        "--search-limit",
+        type=int,
+        default=5,
+        help="Limit used when --check-search is enabled",
+    )
+    return parser.parse_args()
+
+
+def build_service_alias(workspace: str, app_id: str) -> str:
+    return f"{workspace}/default@{app_id}"
+
+
+async def run_health_check(args: argparse.Namespace) -> int:
+    if not args.token:
+        print("❌ Missing token. Provide --token or set HYPHA_TOKEN/RI_SCALE_TOKEN.")
+        return 1
+
+    print(f"Using app_id: {args.app_id}")
     try:
-        # JWT tokens are typically in the format header.payload.signature
-        payload_part = TOKEN.split(".")[1]
-        # JWT payload is base64url encoded
-        padding = "=" * (-len(payload_part) % 4)  # Fix padding if necessary
-        decoded_bytes = base64.urlsafe_b64decode(payload_part + padding)
-        jwt_decoded_token = json.loads(decoded_bytes)
-        print(f"Decoded JWT token payload: {json.dumps(jwt_decoded_token, indent=2)}")
-    except Exception as e:
-        print(f"Error decoding JWT token: {e}")
-
-WORKSPACE = os.environ.get("HYPHA_WORKSPACE", "ri-scale")
-
-
-async def test_chat_proxy():
-    print(f"Connecting to {SERVER_URL}...")
-    try:
-        connect_config = {"server_url": SERVER_URL, "method_timeout": 30}
-        if TOKEN:
-            connect_config["token"] = TOKEN
-        if WORKSPACE:
-            connect_config["workspace"] = WORKSPACE
-
-        server = await connect_to_server(connect_config)
-        print(f"Connected to workspace: {server.config['workspace']}")
-    except Exception as e:
-        print(f"Failed to connect to Hypha: {e}")
-        return
-
-    print("Locating chat-proxy service...")
-    try:
-        # Try finding by alias first
-        target_service_id = None
-        app_services = []
-        def has_chat_completion_schema(service: dict) -> bool:
-            schema = service.get("service_schema") or {}
-            return isinstance(schema, dict) and "chat_completion" in schema
-
-        try:
-            print("Attempting to connect via alias 'ri-scale/chat-proxy' (mode=random)...")
-            proxy = await server.get_service("ri-scale/chat-proxy", {"mode": "random"})
-            target_service_id = "ri-scale/chat-proxy"
-            print("Successfully connected via alias!")
-        except Exception as e:
-            print(f"Alias lookup failed: {e}")
-
-            services = await server.list_services({"workspace": WORKSPACE})
-            # Filter services by explicit service id suffix as app_id may be missing
-            app_services = [
-                s
-                for s in services
-                if s.get("id", "").endswith(":chat-proxy") or s.get("id", "") == "chat-proxy"
-            ]
-
-            print(f"Found {len(app_services)} services for app 'chat-proxy':")
-
-            for s in app_services:
-                print(f" - ID: {s['id']}, Name: {s.get('name')}")
-                if "built-in" not in s["id"] and has_chat_completion_schema(s):
-                    target_service_id = s["id"]
-                    break
-
-        if target_service_id == "ri-scale/chat-proxy":
-            # Alias can resolve to old stale instances; pin to a concrete service exposing chat_completion
-            services = await server.list_services({"workspace": WORKSPACE})
-            app_services = [
-                s
-                for s in services
-                if (
-                    s.get("id", "").endswith(":chat-proxy")
-                    or (
-                        s.get("id", "").endswith(":default")
-                        and s.get("app_id") == "chat-proxy"
-                    )
-                )
-            ]
-            for s in app_services:
-                if has_chat_completion_schema(s):
-                    target_service_id = s["id"]
-                    break
-
-        if not target_service_id and app_services:
-            target_service_id = app_services[0]["id"]
-
-        if not target_service_id:
-            print("No chat-proxy services found.")
-            return
-
-        print(f"Selecting service: {target_service_id}")
-        if target_service_id == "ri-scale/chat-proxy":
-            proxy = await server.get_service(target_service_id, {"mode": "random"})
-        else:
-            proxy = await server.get_service(target_service_id)
-        if hasattr(proxy, "config") and "id" in proxy.config:
-            print(f"Connected Service ID: {proxy.config['id']}")
-        elif hasattr(proxy, "id"):
-             print(f"Connected Service ID: {proxy.id}")
-        else:
-             print("Connected Service (ID unknown)")
-
-        # Check if method exists
-        if not hasattr(proxy, "chat_completion"):
-            print(f"Service {target_service_id} does not have chat_completion method.")
-            return
-
-    except Exception as e:
-        print(f"Error finding/connecting to service: {e}")
-        return
-
-    print("Testing chat_completion with a simple message...")
-    messages = [
-        {"role": "user", "content": "Hello! Please reply with 'SYSTEM ONLINE'."}
-    ]
-    # Using gpt-4-turbo-preview or similar standard model to test pipeline
-    model = "gpt-4-turbo-preview"
+        payload = decode_jwt_payload(args.token)
+        print("Decoded JWT token payload:")
+        print(json.dumps(payload, indent=2))
+    except Exception as exp:
+        print(f"⚠️ Could not decode JWT payload: {exp}")
 
     try:
-        # Set a timeout for the actual call
+        server = await connect_to_server(
+            {
+                "server_url": args.server_url,
+                "token": args.token,
+                "workspace": args.workspace,
+                "method_timeout": max(args.timeout, 30),
+            }
+        )
+    except Exception as exp:
+        print(f"❌ Failed to connect to Hypha: {exp}")
+        return 1
+
+    try:
+        print(f"Connected to workspace: {server.config.get('workspace')}")
+        resolved_id = build_service_alias(args.workspace, args.app_id)
+        print(f"Trying service alias: {resolved_id}")
+        proxy = await server.get_service(resolved_id, {"mode": "random"})
+
+        messages = [{"role": "user", "content": args.prompt}]
+        print(f"Calling chat_completion via: {resolved_id}")
         response = await asyncio.wait_for(
-            proxy.chat_completion(messages=messages, model=model), timeout=60.0
+            proxy.chat_completion(messages=messages, model=args.model),
+            timeout=float(args.timeout),
         )
 
-        print("Response received:")
-        print(json.dumps(response, indent=2))
+        if not isinstance(response, dict):
+            print(f"❌ Unexpected response type: {type(response)}")
+            return 1
 
-        if isinstance(response, dict):
-            if "error" in response:
-                print(f"❌ Chat proxy returned an API error: {response['error']}")
-            elif "choices" in response and len(response["choices"]) > 0:
-                content = response["choices"][0]["message"]["content"]
-                print(f"✅ Chat proxy is working! Content: {content}")
-                if "SYSTEM ONLINE" in content:
-                    print("✅ Response verification passed.")
-                else:
-                    print("⚠️ Response content verification inconclusive.")
-            else:
-                print("❓ Unexpected response format (missing 'choices').")
-        else:
-            print(f"❓ Unexpected response type: {type(response)}")
+        if "error" in response:
+            print(f"❌ chat_completion returned error: {response['error']}")
+            return 1
 
+        choices = response.get("choices") or []
+        if not choices:
+            print("❌ chat_completion response missing choices")
+            print(json.dumps(response, indent=2))
+            return 1
+
+        content = str(choices[0].get("message", {}).get("content", ""))
+        print("Received content:")
+        print(content)
+
+        if args.expected_substring and args.expected_substring not in content:
+            print(
+                "❌ Expected substring not found in content:",
+                args.expected_substring,
+            )
+            return 1
+
+        print("✅ chat-proxy health check passed")
+
+        if args.check_search:
+            print("Checking BioImage Archive search bridge...")
+
+            if not hasattr(proxy, "search_datasets"):
+                print("❌ proxy is missing search_datasets")
+                return 1
+            if not hasattr(proxy, "search_images"):
+                print("❌ proxy is missing search_images")
+                return 1
+
+            try:
+                datasets = await asyncio.wait_for(
+                    proxy.search_datasets(args.search_query, int(args.search_limit)),
+                    timeout=float(args.timeout),
+                )
+                images = await asyncio.wait_for(
+                    proxy.search_images(args.search_query, int(args.search_limit)),
+                    timeout=float(args.timeout),
+                )
+            except asyncio.TimeoutError:
+                print(f"❌ search bridge timed out after {args.timeout}s")
+                return 1
+            except Exception as exp:
+                print(f"❌ search bridge call failed: {exp}")
+                traceback.print_exc()
+                return 1
+
+            for label, payload in (("datasets", datasets), ("images", images)):
+                if not isinstance(payload, dict):
+                    print(f"❌ {label} search returned non-dict payload: {type(payload)}")
+                    return 1
+                if "query" not in payload or "results" not in payload or "total" not in payload:
+                    print(f"❌ {label} search payload missing expected keys")
+                    print(json.dumps(payload, indent=2))
+                    return 1
+                if not isinstance(payload.get("results"), list):
+                    print(f"❌ {label} search results is not a list")
+                    return 1
+
+            print("✅ search bridge health check passed")
+
+        return 0
     except asyncio.TimeoutError:
-        print("❌ Chat proxy request timed out (60s).")
-    except Exception as e:
-        print(f"❌ Error calling chat_completion: {e}")
+        print(f"❌ chat_completion timed out after {args.timeout}s")
+        return 1
+    except Exception as exp:
+        print(f"❌ Error during health check: {exp}")
         traceback.print_exc()
+        return 1
+    finally:
+        try:
+            await server.disconnect()
+        except Exception:
+            pass
+
+
+def main() -> int:
+    args = parse_args()
+    return asyncio.run(run_health_check(args))
 
 
 if __name__ == "__main__":
-    asyncio.run(test_chat_proxy())
+    raise SystemExit(main())
