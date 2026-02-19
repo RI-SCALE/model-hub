@@ -859,15 +859,18 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
       return json.dumps({"error": "simulated-upstream-error"})
 
     # Prefer the JS-side proxy wrapper first.
+    # Wait briefly for registration to avoid unnecessary fallback to Python websocket path.
     try:
-      if hasattr(js, "globalThis") and getattr(js.globalThis, "hypha_chat_proxy", None):
-        js_result = await asyncio.wait_for(
-          js.globalThis.hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model),
-          timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
-        )
-        if isinstance(js_result, str):
-          return js_result
-        return str(js_result)
+      for _ in range(20):
+        if hasattr(js, "globalThis") and getattr(js.globalThis, "hypha_chat_proxy", None):
+          js_result = await asyncio.wait_for(
+            js.globalThis.hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model),
+            timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
+          )
+          if isinstance(js_result, str):
+            return js_result
+          return str(js_result)
+        await asyncio.sleep(0.25)
     except asyncio.TimeoutError:
       return json.dumps({"error": "bridge-timeout: JS proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
     except BaseException as js_exp:
