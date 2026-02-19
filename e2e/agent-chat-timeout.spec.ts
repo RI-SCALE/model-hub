@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 const CHAT_READY_TIMEOUT = 120_000;
 const RESPONSE_TIMEOUT = 240_000;
 
-async function openAgentChat(page: Parameters<typeof test>[0]['page']) {
+async function openAgentChat(page: Page) {
   await page.goto('/#/agents');
 
   const input = page.locator('textarea[placeholder*="Type a message"]');
@@ -14,8 +15,8 @@ async function openAgentChat(page: Parameters<typeof test>[0]['page']) {
 }
 
 async function sendAndAwaitResponse(
-  page: Parameters<typeof test>[0]['page'],
-  input: ReturnType<Parameters<typeof test>[0]['page']['locator']>,
+  page: Page,
+  input: Locator,
   prompt: string,
   options?: {
     assertNotOnlyPlaceholder?: string;

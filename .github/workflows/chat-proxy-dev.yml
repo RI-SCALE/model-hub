@@ -34,22 +34,10 @@ jobs:
         id: ids
         run: |
           BRANCH_NAME="${GITHUB_HEAD_REF:-${GITHUB_REF_NAME}}"
-          APP_ID=$(python - <<'PY'
-from scripts.chat_proxy_utils import make_dev_app_id
-import os
-print(make_dev_app_id(os.environ['BRANCH_NAME']))
-PY
-)
-          DUMMY_APP_ID=$(python - <<'PY'
-from scripts.chat_proxy_utils import make_dev_app_id
-import os
-print(make_dev_app_id(os.environ['BRANCH_NAME'], prefix='chat-proxy-dev-dummy'))
-PY
-)
+          APP_ID=$(BRANCH_NAME="$BRANCH_NAME" python -c "from scripts.chat_proxy_utils import make_dev_app_id; import os; print(make_dev_app_id(os.environ['BRANCH_NAME']))")
+          DUMMY_APP_ID=$(BRANCH_NAME="$BRANCH_NAME" python -c "from scripts.chat_proxy_utils import make_dev_app_id; import os; print(make_dev_app_id(os.environ['BRANCH_NAME'], prefix='chat-proxy-dev-dummy'))")
           echo "app_id=${APP_ID}" >> $GITHUB_OUTPUT
           echo "dummy_app_id=${DUMMY_APP_ID}" >> $GITHUB_OUTPUT
-        env:
-          BRANCH_NAME: "${{ github.head_ref || github.ref_name }}"
 
       - name: Deploy dummy proxy app
         run: |

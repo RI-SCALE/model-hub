@@ -34,7 +34,7 @@ const INPUT_DRAFT_CACHE_KEY = 'ri-scale-agent-input-drafts-v1';
 const DEFAULT_CHAT_MODEL = 'gpt-5-mini';
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
 const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
-const CHAT_PROXY_REQUEST_TIMEOUT_MS = 60_000;
+const CHAT_PROXY_REQUEST_TIMEOUT_MS = 120_000;
 const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 15_000;
 const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 45_000;
 
@@ -866,18 +866,27 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
       return json.dumps({"error": "simulated-upstream-error"})
 
     # Prefer the JS-side proxy wrapper first.
-    # Wait briefly for registration to avoid unnecessary fallback to Python websocket path.
+    # Wait for registration and avoid Python websocket fallback (known to be flaky in pyodide).
     try:
-      for _ in range(20):
-        if hasattr(js, "globalThis") and getattr(js.globalThis, "hypha_chat_proxy", None):
+      for _ in range(40):
+        bridge = None
+        if hasattr(js, "globalThis"):
+          bridge = getattr(js.globalThis, "hypha_chat_proxy", None)
+        if bridge is None:
+          bridge = getattr(js, "hypha_chat_proxy", None)
+        if bridge is None and hasattr(js, "window"):
+          bridge = getattr(js.window, "hypha_chat_proxy", None)
+
+        if bridge is not None:
           js_result = await asyncio.wait_for(
-            js.globalThis.hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model),
+            bridge(messages_json, tools_json, tool_choice_json, model),
             timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
           )
           if isinstance(js_result, str):
             return js_result
           return str(js_result)
         await asyncio.sleep(0.25)
+      print("DEBUG: JS proxy wrapper not ready after wait; falling back to Python bridge")
     except asyncio.TimeoutError:
       return json.dumps({"error": "bridge-timeout: JS proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
     except BaseException as js_exp:
@@ -1713,7 +1722,7 @@ await _chat_wrapper()
         };
 
         let pythonResponse = '';
-        const maxExecutionAttempts = 2;
+        const maxExecutionAttempts = 3;
         let lastExecutionError: Error | null = null;
         for (let attempt = 1; attempt <= maxExecutionAttempts; attempt += 1) {
           try {
@@ -1727,8 +1736,8 @@ await _chat_wrapper()
             lastExecutionError = executionError instanceof Error ? executionError : new Error(String(executionError));
             const errorText = String(lastExecutionError.message || lastExecutionError);
             updateAgentProgress('Execution error encountered.', errorText);
-            const isSyntaxError = /SyntaxError|expected 'except' or 'finally'|invalid syntax/i.test(errorText);
-            if (!isSyntaxError || attempt >= maxExecutionAttempts) {
+            const isRetriableError = /SyntaxError|expected 'except' or 'finally'|invalid syntax|timed out|bridge-timeout|proxy bridge unavailable/i.test(errorText);
+            if (!isRetriableError || attempt >= maxExecutionAttempts) {
               break;
             }
           }
@@ -1761,7 +1770,8 @@ await _chat_wrapper()
         id: Date.now().toString(),
         role: 'system',
         content: `**Error**: ${error.message || 'Unknown error occurred during chat.'}`,
-        timestamp: new Date()
+        timestamp: new Date(),
+        progressTrace: buildProgressTraceSnapshot(),
       };
       updateAgentProgress('Request failed.', error.message || 'Unknown error occurred during chat.');
       if (currentSessionKeyRef.current === requestSessionKey) {

@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 
 const CHAT_READY_TIMEOUT = 120_000;
 
-async function openAgentChat(page: Parameters<typeof test>[0]['page']) {
+async function openAgentChat(page: Page) {
   await page.goto('/#/agents');
 
   const input = page.locator('textarea[placeholder*="Type a message"]');
