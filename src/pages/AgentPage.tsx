@@ -2114,7 +2114,6 @@ await _chat_wrapper()
       const showWelcomeBufferForCurrentChat =
         !showTypingForCurrentChat &&
         !sessionFromRoute &&
-        currentSessionId === LOCAL_DRAFT_SESSION_ID &&
         messages.length === 0 &&
         isWelcomeMessageLoading;
       return (
@@ -2463,7 +2462,7 @@ await _chat_wrapper()
                                         className="text-xs text-ri-orange hover:underline inline-flex items-center gap-1"
                                       >
                                         {copiedKey === `progress-${msg.id}` ? <FiCheck size={12} /> : <FiCopy size={12} />}
-                                        {copiedKey === `progress-${msg.id}` ? 'Copied' : 'Copy progress'}
+                                        {copiedKey === `progress-${msg.id}` ? 'Copied' : ''}
                                       </button>
                                     </div>
                                     {msg.progressTrace?.summary && (
@@ -2516,7 +2515,7 @@ await _chat_wrapper()
                                   className="text-xs text-ri-orange hover:underline inline-flex items-center gap-1"
                                 >
                                   {copiedKey === 'live-progress' ? <FiCheck size={12} /> : <FiCopy size={12} />}
-                                  {copiedKey === 'live-progress' ? 'Copied' : 'Copy progress'}
+                                  {copiedKey === 'live-progress' ? 'Copied' : ''}
                                 </button>
                               </div>
                               {showAgentProgressDetails && (
