@@ -35,8 +35,8 @@ jobs:
       - name: Install Playwright browser
         run: pnpm playwright install --with-deps chromium
 
-      - name: E2E navigation smoke
-        run: pnpm playwright test e2e/navigation.spec.ts --reporter=line
+      - name: E2E smoke
+        run: pnpm playwright test e2e/navigation.spec.ts e2e/kernel-randomuuid-compat.spec.ts --reporter=line
 
   python-tests:
     runs-on: ubuntu-latest
