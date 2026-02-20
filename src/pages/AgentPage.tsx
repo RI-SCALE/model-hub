@@ -152,6 +152,7 @@ const AgentPage: React.FC = () => {
   const agentProgressDetailsRef = useRef<string[]>([]);
   const [agentSystemPrompt, setAgentSystemPrompt] = useState<string | null>(null);
   const [agentWelcomeMessage, setAgentWelcomeMessage] = useState<string | null>(null);
+  const [isWelcomeMessageLoading, setIsWelcomeMessageLoading] = useState(false);
   const [agentChatModel, setAgentChatModel] = useState<string>(DEFAULT_CHAT_MODEL);
 
   const defaultAgentId = 'hypha-agents/grammatical-deduction-bury-enormously';
@@ -205,6 +206,9 @@ const AgentPage: React.FC = () => {
     const currentSessionKeyRef = useRef<string>(getSessionKey(currentSessionId));
 
     const getWelcomeMessages = () => {
+      if (isWelcomeMessageLoading) {
+        return [];
+      }
       const welcomeText = (agentWelcomeMessage && agentWelcomeMessage.trim())
         ? agentWelcomeMessage
         : `Hello! I'm ${selectedAgent?.name || 'your assistant'}, how may I help you today?`;
@@ -789,7 +793,7 @@ const AgentPage: React.FC = () => {
           }
           setMessages(getWelcomeMessages());
       }
-    }, [workspace, sessionFromRoute, extraPath, server, navigate, isLoggedIn, agentWelcomeMessage]);
+    }, [workspace, sessionFromRoute, extraPath, server, navigate, isLoggedIn, agentWelcomeMessage, isWelcomeMessageLoading]);
 
   // Load and start agent when selected (Keep existing logic but wrap)
   useEffect(() => {
@@ -797,11 +801,14 @@ const AgentPage: React.FC = () => {
       // If we don't have what we need, ensure ready state is false
       if (!selectedAgent || !isKernelReady || !executeCode || !server) {
           setAgentReady(false);
+          setIsWelcomeMessageLoading(false);
           return;
       }
       
       // Start loading
       setAgentReady(false);
+      setIsWelcomeMessageLoading(true);
+      setAgentWelcomeMessage(null);
 
       try {
         console.log(`Loading agent ${selectedAgent.name}...`);
@@ -863,10 +870,60 @@ except Exception as e:
     print(f"Error installing dependencies: {e}")
 
 # Define the proxy function for compatibility with agents expecting js.hypha_chat_proxy
-_hypha_server_connection = None
+
+def _is_timeout_payload(payload):
+  if isinstance(payload, str):
+    return "timed out" in payload.lower() or "timeout" in payload.lower()
+  if isinstance(payload, dict):
+    err = payload.get("error") or payload.get("message")
+    return isinstance(err, str) and ("timed out" in err.lower() or "timeout" in err.lower())
+  return False
+
+async def _python_fallback_chat_completion(messages, tools, tool_choice, model):
+  last_exception = None
+  for attempt in range(1, 3):
+    try:
+      print(f"DEBUG: Connecting to Hypha server for chat proxy (attempt {attempt})...")
+      server = await connect_to_server({
+        "server_url": "https://hypha.aicell.io",
+        "method_timeout": 600
+      })
+
+      proxy = await server.get_service('${chatProxyServiceIdLiteral}', {"timeout": 600})
+      print("DEBUG: Python fallback resolved chat-proxy service")
+
+      result = await asyncio.wait_for(
+        proxy.chat_completion(messages, tools, tool_choice, model),
+        timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
+      )
+      print("DEBUG: Python fallback chat_completion returned successfully")
+
+      if _is_timeout_payload(result) and attempt < 2:
+        print("DEBUG: Python fallback received timeout payload, retrying...")
+        await asyncio.sleep(0.35 * attempt)
+        continue
+
+      return result
+    except asyncio.TimeoutError as timeout_exp:
+      last_exception = timeout_exp
+      if attempt < 2:
+        print("DEBUG: Python fallback call timed out, retrying...")
+        await asyncio.sleep(0.35 * attempt)
+        continue
+      raise
+    except BaseException as fallback_exp:
+      last_exception = fallback_exp
+      if attempt < 2:
+        print(f"DEBUG: Python fallback error on attempt {attempt}, retrying: {fallback_exp}")
+        await asyncio.sleep(0.35 * attempt)
+        continue
+      raise
+
+  if last_exception:
+    raise last_exception
+  return {"error": "bridge-error: unknown python fallback error"}
 
 async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
-  global _hypha_server_connection
   try:
     test_mode = None
     if hasattr(js, "globalThis"):
@@ -934,22 +991,7 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
     tools = json.loads(tools_json) if tools_json else None
     tool_choice = json.loads(tool_choice_json) if tool_choice_json and tool_choice_json != "auto" else tool_choice_json
 
-    if _hypha_server_connection is None:
-      print("DEBUG: Connecting to Hypha server for chat proxy...")
-      _hypha_server_connection = await connect_to_server({
-        "server_url": "https://hypha.aicell.io",
-        "method_timeout": 600
-      })
-
-    server = _hypha_server_connection
-    proxy = await server.get_service('${chatProxyServiceIdLiteral}', {"timeout": 600})
-    print("DEBUG: Python fallback resolved chat-proxy service")
-
-    result = await asyncio.wait_for(
-      proxy.chat_completion(messages, tools, tool_choice, model),
-      timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
-    )
-    print("DEBUG: Python fallback chat_completion returned successfully")
+    result = await _python_fallback_chat_completion(messages, tools, tool_choice, model)
     return json.dumps(result)
   except asyncio.TimeoutError:
     return json.dumps({"error": "bridge-timeout: proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
@@ -971,6 +1013,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
           ? manifest.welcomeMessage
           : null;
         setAgentWelcomeMessage(welcomeText);
+        setIsWelcomeMessageLoading(false);
         setAgentChatModel(DEFAULT_CHAT_MODEL);
 
         // 3. Get startup script for kernel execution
@@ -1096,6 +1139,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
 
       } catch (err: any) {
         setAgentReady(false);
+        setIsWelcomeMessageLoading(false);
         console.error("Error loading agent:", err);
         const errorMsg = {
             id: Date.now().toString(),
@@ -1143,7 +1187,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     if (welcome.length > 0) {
       setMessages(welcome);
     }
-  }, [currentSessionId, sessionFromRoute, agentWelcomeMessage, messages.length]);
+  }, [currentSessionId, sessionFromRoute, agentWelcomeMessage, isWelcomeMessageLoading, messages.length]);
 
   // Expose proxy wrapper to Python environment
   useEffect(() => {
@@ -1179,6 +1223,18 @@ print("DEBUG: hypha_chat_proxy bridge ready")
                    reject(error);
                  });
              });
+           };
+
+           const isTimeoutPayload = (payload: any): boolean => {
+             if (!payload) return false;
+             if (typeof payload === 'string') {
+               return /request timed out|timed out|timeout/i.test(payload);
+             }
+             if (typeof payload === 'object') {
+               const maybeError = payload.error ?? payload.message;
+               return typeof maybeError === 'string' && /request timed out|timed out|timeout/i.test(maybeError);
+             }
+             return false;
            };
 
            const resolveChatProxyService = async (forceRefresh: boolean = false) => {
@@ -1230,20 +1286,42 @@ print("DEBUG: hypha_chat_proxy bridge ready")
                throw new Error("Proxy service found but has no chat_completion method.");
            }
 
-           let result: any;
-           try {
-             result = await withTimeout(
-               proxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
-               CHAT_PROXY_COMPLETION_TIMEOUT_MS,
-               `chat_completion response from ${CHAT_PROXY_SERVICE_ID}`
-             );
-           } catch (primaryError) {
-             const refreshedProxy: any = await resolveChatProxyService(true);
-             result = await withTimeout(
-               refreshedProxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
-               CHAT_PROXY_COMPLETION_TIMEOUT_MS,
-               `chat_completion response retry from ${CHAT_PROXY_SERVICE_ID}`
-             );
+           let result: any = null;
+           let completionError: Error | null = null;
+           for (let attempt = 1; attempt <= 2; attempt += 1) {
+             try {
+               const proxyForAttempt: any = attempt === 1
+                 ? proxy
+                 : await resolveChatProxyService(true);
+               result = await withTimeout(
+                 proxyForAttempt.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
+                 CHAT_PROXY_COMPLETION_TIMEOUT_MS,
+                 `chat_completion response attempt ${attempt} from ${CHAT_PROXY_SERVICE_ID}`
+               );
+
+               if (isTimeoutPayload(result) && attempt < 2) {
+                 completionError = new Error('Request timed out from chat proxy; retrying once.');
+                 await new Promise(resolve => setTimeout(resolve, 350));
+                 continue;
+               }
+
+               completionError = null;
+               break;
+             } catch (attemptError: any) {
+               completionError = attemptError instanceof Error ? attemptError : new Error(String(attemptError));
+               if (attempt < 2) {
+                 await new Promise(resolve => setTimeout(resolve, 350));
+                 continue;
+               }
+             }
+           }
+
+           if (completionError) {
+             throw completionError;
+           }
+
+           if (isTimeoutPayload(result)) {
+             throw new Error('Request timed out.');
            }
            console.log("AgentPage: chat_completion result:", result);
            
@@ -2033,6 +2111,12 @@ await _chat_wrapper()
     (() => {
       const currentSessionKey = getSessionKey(currentSessionId);
       const showTypingForCurrentChat = isTyping && typingSessionKey === currentSessionKey;
+      const showWelcomeBufferForCurrentChat =
+        !showTypingForCurrentChat &&
+        !sessionFromRoute &&
+        currentSessionId === LOCAL_DRAFT_SESSION_ID &&
+        messages.length === 0 &&
+        isWelcomeMessageLoading;
       return (
     <div className="flex h-[calc(100vh-80px)] bg-gray-50 relative overflow-hidden">
       {/* Mobile Sidebar Overlay */}
@@ -2334,13 +2418,25 @@ await _chat_wrapper()
                         </ReactMarkdown>
                         </div>
                         {msg.role !== 'user' && (
-                            <div className="mt-2 pt-2 border-t border-gray-100 flex justify-end">
+                            <div className="mt-2 pt-2 border-t border-gray-100 flex justify-end items-center gap-2">
+                                {hasStoredProgress && (
+                                  <button
+                                    onClick={() => setExpandedProgressMessageIds(prev => ({ ...prev, [msg.id]: !progressExpanded }))}
+                                    className="text-xs text-ri-orange hover:underline inline-flex items-center"
+                                    title={progressExpanded ? 'Hide generation progress' : 'Show generation progress'}
+                                  >
+                                    <FiChevronDown
+                                      size={13}
+                                      className={`transition-transform ${progressExpanded ? 'rotate-180' : 'rotate-0'}`}
+                                    />
+                                  </button>
+                                )}
                                 <button
                                   onClick={() => copyTextWithFeedback(msg.content, `msg-${msg.id}`)}
-                                  className="text-xs text-ri-orange hover:underline inline-flex items-center gap-1"
+                                  className="text-xs text-ri-orange hover:underline inline-flex items-center"
+                                  title="Copy output"
                                 >
-                                  {copiedKey === `msg-${msg.id}` ? <FiCheck size={12} /> : <FiCopy size={12} />}
-                                  {copiedKey === `msg-${msg.id}` ? 'Copied' : 'Copy output'}
+                                  {copiedKey === `msg-${msg.id}` ? <FiCheck size={13} /> : <FiCopy size={13} />}
                                 </button>
                             </div>
                         )}
@@ -2356,12 +2452,6 @@ await _chat_wrapper()
                         )}
                         {hasStoredProgress && (
                             <div className="mt-2 pt-2 border-t border-gray-100">
-                                <button
-                                  onClick={() => setExpandedProgressMessageIds(prev => ({ ...prev, [msg.id]: !progressExpanded }))}
-                                  className="text-xs text-ri-orange hover:underline"
-                                >
-                                  {progressExpanded ? 'Hide generation progress' : 'Show generation progress'}
-                                </button>
                                 {progressExpanded && (
                                   <div className="mt-2 max-h-40 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-2 space-y-1">
                                     <div className="flex justify-end mb-1">
@@ -2398,16 +2488,18 @@ await _chat_wrapper()
                     );
                   })()
                 ))}
-                {showTypingForCurrentChat && (
+                {(showTypingForCurrentChat || showWelcomeBufferForCurrentChat) && (
                     <div className="flex justify-start">
                       <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm">
                           <div className="flex items-center space-x-2">
                               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
                               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
                               <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                              <span className="text-xs text-gray-600">{agentProgress || 'Thinking...'}</span>
+                              <span className="text-xs text-gray-600">
+                                {showWelcomeBufferForCurrentChat ? 'Preparing welcome message...' : (agentProgress || 'Thinking...')}
+                              </span>
                           </div>
-                          {agentProgressDetails.length > 0 && (
+                          {showTypingForCurrentChat && agentProgressDetails.length > 0 && (
                             <div className="mt-2">
                               <div className="flex items-center justify-between gap-2">
                                 <button
