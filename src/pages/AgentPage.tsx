@@ -34,20 +34,74 @@ const INPUT_DRAFT_CACHE_KEY = 'ri-scale-agent-input-drafts-v1';
 const DEFAULT_CHAT_MODEL = 'gpt-5-mini';
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
 const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
+const MAX_CHAT_PROXY_APP_ID_LENGTH = 63;
 const CHAT_PROXY_REQUEST_TIMEOUT_MS = 120_000;
 const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 15_000;
 const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 45_000;
 
-const getChatProxyServiceId = (): string => {
-  const isProductionBuild = process.env.NODE_ENV === 'production';
-  const configuredAppId = (process.env.REACT_APP_CHAT_PROXY_APP_ID || '').trim();
-  const primaryAppId = isProductionBuild
-    ? (configuredAppId || PRODUCTION_CHAT_PROXY_APP_ID)
-    : DEFAULT_DEV_CHAT_PROXY_APP_ID;
-  return `ri-scale/default@${primaryAppId}`;
+const slugifyBranchName = (branchName: string): string => {
+  const normalized = branchName
+    .trim()
+    .toLowerCase()
+    .replaceAll('_', '-')
+    .replaceAll('/', '-')
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || 'branch';
 };
 
-const CHAT_PROXY_SERVICE_ID = getChatProxyServiceId();
+const makeDevAppId = (branchName: string, prefix: string = DEFAULT_DEV_CHAT_PROXY_APP_ID): string => {
+  const branchSlug = slugifyBranchName(branchName);
+  const suffixBudget = MAX_CHAT_PROXY_APP_ID_LENGTH - prefix.length - 1;
+  if (suffixBudget <= 0) {
+    return prefix.slice(0, MAX_CHAT_PROXY_APP_ID_LENGTH);
+  }
+  const trimmedSlug = branchSlug.slice(0, suffixBudget);
+  return trimmedSlug ? `${prefix}-${trimmedSlug}` : prefix;
+};
+
+const uniqueNonEmptyValues = (values: Array<string | undefined | null>): string[] => {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const cleaned = (value || '').trim();
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    result.push(cleaned);
+  }
+  return result;
+};
+
+const getChatProxyServiceIds = (): string[] => {
+  const isProductionBuild = process.env.NODE_ENV === 'production';
+  const configuredAppId = (process.env.REACT_APP_CHAT_PROXY_APP_ID || '').trim();
+  if (isProductionBuild) {
+    return [`ri-scale/default@${configuredAppId || PRODUCTION_CHAT_PROXY_APP_ID}`];
+  }
+
+  const branchNameCandidates = uniqueNonEmptyValues([
+    process.env.REACT_APP_CHAT_PROXY_BRANCH,
+    process.env.REACT_APP_BRANCH_NAME,
+    process.env.REACT_APP_GITHUB_HEAD_REF,
+    process.env.REACT_APP_GITHUB_REF_NAME,
+    process.env.GITHUB_HEAD_REF,
+    process.env.GITHUB_REF_NAME,
+  ]);
+
+  const branchAppIds = branchNameCandidates.map((branchName) => makeDevAppId(branchName));
+  const appIdCandidates = uniqueNonEmptyValues([
+    configuredAppId,
+    ...branchAppIds,
+    DEFAULT_DEV_CHAT_PROXY_APP_ID,
+    PRODUCTION_CHAT_PROXY_APP_ID,
+  ]);
+
+  return appIdCandidates.map((appId) => `ri-scale/default@${appId}`);
+};
+
+const CHAT_PROXY_SERVICE_IDS = getChatProxyServiceIds();
+const CHAT_PROXY_SERVICE_ID = CHAT_PROXY_SERVICE_IDS[0] || `ri-scale/default@${DEFAULT_DEV_CHAT_PROXY_APP_ID}`;
 
 interface Agent {
   id: string; // Artifact ID
@@ -155,6 +209,7 @@ const AgentPage: React.FC = () => {
   const [isWelcomeMessageLoading, setIsWelcomeMessageLoading] = useState(false);
   const [hasAttemptedWelcomeMessageLoad, setHasAttemptedWelcomeMessageLoad] = useState(false);
   const [agentChatModel, setAgentChatModel] = useState<string>(DEFAULT_CHAT_MODEL);
+  const activeChatProxyServiceIdRef = useRef<string>(CHAT_PROXY_SERVICE_ID);
 
   const defaultAgentId = 'hypha-agents/grammatical-deduction-bury-enormously';
     const LOCAL_DRAFT_SESSION_ID = '__local_draft_session__';
@@ -857,7 +912,7 @@ const AgentPage: React.FC = () => {
 
         if (packages.length > 0) {
             const packagesJson = JSON.stringify(packages);
-            const chatProxyServiceIdLiteral = CHAT_PROXY_SERVICE_ID
+            const chatProxyServiceIdsLiteral = JSON.stringify(CHAT_PROXY_SERVICE_IDS)
               .replaceAll('\\', '\\\\')
               .replaceAll("'", "\\'");
             const installCode = `
@@ -888,6 +943,7 @@ def _is_timeout_payload(payload):
 
 async def _python_fallback_chat_completion(messages, tools, tool_choice, model):
   last_exception = None
+  service_ids = json.loads('${chatProxyServiceIdsLiteral}')
   for attempt in range(1, 3):
     try:
       print(f"DEBUG: Connecting to Hypha server for chat proxy (attempt {attempt})...")
@@ -896,8 +952,23 @@ async def _python_fallback_chat_completion(messages, tools, tool_choice, model):
         "method_timeout": 600
       })
 
-      proxy = await server.get_service('${chatProxyServiceIdLiteral}', {"timeout": 600})
-      print("DEBUG: Python fallback resolved chat-proxy service")
+      proxy = None
+      resolved_service_id = None
+      last_service_error = None
+      for service_id in service_ids:
+        try:
+          proxy = await server.get_service(service_id, {"timeout": 600})
+          resolved_service_id = service_id
+          break
+        except BaseException as service_exp:
+          last_service_error = service_exp
+
+      if proxy is None:
+        if last_service_error:
+          raise last_service_error
+        raise RuntimeError("No chat-proxy service IDs configured")
+
+      print(f"DEBUG: Python fallback resolved chat-proxy service via {resolved_service_id}")
 
       result = await asyncio.wait_for(
         proxy.chat_completion(messages, tools, tool_choice, model),
@@ -1203,8 +1274,10 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     // Only set up the proxy when the server is connected and available
     if (server) {
       console.log("AgentPage: Registering hypha_chat_proxy...");
-      (globalThis as any).__chatProxyServiceId = CHAT_PROXY_SERVICE_ID;
+      activeChatProxyServiceIdRef.current = CHAT_PROXY_SERVICE_ID;
+      (globalThis as any).__chatProxyServiceId = activeChatProxyServiceIdRef.current;
       let cachedChatProxyService: any = null;
+      let cachedChatProxyServiceId: string | null = null;
       (globalThis as any).hypha_chat_proxy = async (messages: string | any, tools: string | any, tool_choice: string | any, model: string) => {
         try {
            const testMode = (globalThis as any).__chatProxyTestMode;
@@ -1247,31 +1320,40 @@ print("DEBUG: hypha_chat_proxy bridge ready")
            };
 
            const resolveChatProxyService = async (forceRefresh: boolean = false) => {
-             if (!forceRefresh && cachedChatProxyService) {
+             if (!forceRefresh && cachedChatProxyService && cachedChatProxyServiceId) {
                return cachedChatProxyService;
              }
 
              let lastError: Error | null = null;
+             const prioritizedServiceIds = uniqueNonEmptyValues([
+               activeChatProxyServiceIdRef.current,
+               ...CHAT_PROXY_SERVICE_IDS,
+             ]);
              for (let attempt = 1; attempt <= 3; attempt += 1) {
-               try {
-                 const resolved: any = await withTimeout(
-                   server.getService(CHAT_PROXY_SERVICE_ID, { timeout: 600 }),
-                   CHAT_PROXY_RESOLVE_TIMEOUT_MS,
-                   `service resolution for ${CHAT_PROXY_SERVICE_ID} (attempt ${attempt})`
-                 );
-                 if (!resolved || typeof resolved.chat_completion !== 'function') {
-                   throw new Error('Proxy service found but has no chat_completion method.');
-                 }
-                 cachedChatProxyService = resolved;
-                 return resolved;
-               } catch (resolveError: any) {
-                 lastError = resolveError instanceof Error ? resolveError : new Error(String(resolveError));
-                 if (attempt < 3) {
-                   await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+               for (const serviceId of prioritizedServiceIds) {
+                 try {
+                   const resolved: any = await withTimeout(
+                     server.getService(serviceId, { timeout: 600 }),
+                     CHAT_PROXY_RESOLVE_TIMEOUT_MS,
+                     `service resolution for ${serviceId} (attempt ${attempt})`
+                   );
+                   if (!resolved || typeof resolved.chat_completion !== 'function') {
+                     throw new Error(`Proxy service found but has no chat_completion method: ${serviceId}`);
+                   }
+                   cachedChatProxyService = resolved;
+                   cachedChatProxyServiceId = serviceId;
+                   activeChatProxyServiceIdRef.current = serviceId;
+                   (globalThis as any).__chatProxyServiceId = serviceId;
+                   return resolved;
+                 } catch (resolveError: any) {
+                   lastError = resolveError instanceof Error ? resolveError : new Error(String(resolveError));
                  }
                }
+               if (attempt < 3) {
+                 await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+               }
              }
-             throw lastError || new Error('Unable to resolve chat proxy service.');
+             throw lastError || new Error(`Unable to resolve chat proxy service from candidates: ${prioritizedServiceIds.join(', ')}`);
            };
 
            console.log("AgentPage: hypha_chat_proxy called with model:", model);
@@ -1305,7 +1387,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
                result = await withTimeout(
                  proxyForAttempt.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
                  CHAT_PROXY_COMPLETION_TIMEOUT_MS,
-                 `chat_completion response attempt ${attempt} from ${CHAT_PROXY_SERVICE_ID}`
+                 `chat_completion response attempt ${attempt} from ${(globalThis as any).__chatProxyServiceId || CHAT_PROXY_SERVICE_ID}`
                );
 
                if (isTimeoutPayload(result) && attempt < 2) {
@@ -1408,9 +1490,24 @@ print("DEBUG: hypha_chat_proxy bridge ready")
             if (!forceRefresh && cachedChatProxyService) {
               return cachedChatProxyService;
             }
-            const resolved: any = await server.getService(CHAT_PROXY_SERVICE_ID, { timeout: 600 });
-            cachedChatProxyService = resolved;
-            return resolved;
+            const prioritizedServiceIds = uniqueNonEmptyValues([
+              activeChatProxyServiceIdRef.current,
+              ...CHAT_PROXY_SERVICE_IDS,
+            ]);
+            let lastResolveError: any = null;
+            for (const serviceId of prioritizedServiceIds) {
+              try {
+                const resolved: any = await server.getService(serviceId, { timeout: 600 });
+                cachedChatProxyService = resolved;
+                cachedChatProxyServiceId = serviceId;
+                activeChatProxyServiceIdRef.current = serviceId;
+                (globalThis as any).__chatProxyServiceId = serviceId;
+                return resolved;
+              } catch (resolveError: any) {
+                lastResolveError = resolveError;
+              }
+            }
+            throw lastResolveError || new Error('Unable to resolve chat proxy service.');
           };
 
           let proxy = await resolveChatProxyService();
