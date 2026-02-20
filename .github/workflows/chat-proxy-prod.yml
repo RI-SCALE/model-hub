@@ -12,8 +12,8 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     env:
-      HYPHA_SERVER_URL: ${{ secrets.HYPHA_SERVER_URL || secrets.RI_SCALE_SERVER_URL }}
-      HYPHA_WORKSPACE: ${{ secrets.HYPHA_WORKSPACE || 'ri-scale' }}
+      HYPHA_SERVER_URL: ${{ vars.HYPHA_SERVER_URL }}
+      HYPHA_WORKSPACE: ${{ vars.HYPHA_WORKSPACE || 'ri-scale' }}
       RI_SCALE_TOKEN: ${{ secrets.RI_SCALE_TOKEN }}
       HYPHA_TOKEN: ${{ secrets.RI_SCALE_TOKEN }}
       PROD_APP_ID: chat-proxy
@@ -26,7 +26,7 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.11'
+          python-version: "3.11"
 
       - name: Install Python tooling
         run: |
