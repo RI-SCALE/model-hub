@@ -31,7 +31,9 @@ interface SessionInputDraftCache {
 const MAX_COLLAPSED_MESSAGE_CHARS = 1200;
 const MAX_COLLAPSED_MESSAGE_LINES = 16;
 const INPUT_DRAFT_CACHE_KEY = 'ri-scale-agent-input-drafts-v1';
-const DEFAULT_CHAT_MODEL = 'gpt-5-mini';
+const GPT5_NANO_CHAT_MODEL = 'gpt-5-nano-2025-08-07';
+const GPT41_NANO_CHAT_MODEL = 'gpt-4.1-nano-2025-04-14';
+const DEFAULT_CHAT_MODEL = GPT41_NANO_CHAT_MODEL;
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
 const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
 const MAX_CHAT_PROXY_APP_ID_LENGTH = 63;
@@ -102,6 +104,25 @@ const getChatProxyServiceIds = (): string[] => {
 
 const CHAT_PROXY_SERVICE_IDS = getChatProxyServiceIds();
 const CHAT_PROXY_SERVICE_ID = CHAT_PROXY_SERVICE_IDS[0] || `ri-scale/default@${DEFAULT_DEV_CHAT_PROXY_APP_ID}`;
+
+const normalizeRequestedChatModel = (candidate: unknown): string | null => {
+  const value = typeof candidate === 'string' ? candidate.trim() : '';
+  if (!value) return null;
+  if (value.startsWith('gpt-5')) return GPT5_NANO_CHAT_MODEL;
+  if (value.startsWith('gpt-4.1')) return GPT41_NANO_CHAT_MODEL;
+  return null;
+};
+
+const resolveAgentChatModel = (manifest: Record<string, any>): string => {
+  const configuredModel = normalizeRequestedChatModel(process.env.REACT_APP_CHAT_MODEL);
+  if (configuredModel) return configuredModel;
+
+  const manifestModel = normalizeRequestedChatModel(manifest?.model_config?.model)
+    || normalizeRequestedChatModel(manifest?.model)
+    || normalizeRequestedChatModel(manifest?.chat_model);
+
+  return manifestModel || DEFAULT_CHAT_MODEL;
+};
 
 interface Agent {
   id: string; // Artifact ID
@@ -1093,7 +1114,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         setAgentWelcomeMessage(welcomeText);
         setIsWelcomeMessageLoading(false);
         setHasAttemptedWelcomeMessageLoad(true);
-        setAgentChatModel(DEFAULT_CHAT_MODEL);
+        setAgentChatModel(resolveAgentChatModel(manifest));
 
         // 3. Get startup script for kernel execution
         const startupScriptRaw = manifest.startup_script;
@@ -1757,7 +1778,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     }
   };
 
-  const generateTitle = async (messages: Message[], sessionId: string, agentId: string) => {
+  const generateTitle = async (messages: Message[], sessionId: string, agentId: string, model: string) => {
       // Find the first user message
       const firstUserMsg = messages.find(m => m.role === 'user');
       if (!firstUserMsg || !server || !sessionId) return;
@@ -1770,8 +1791,9 @@ print("DEBUG: hypha_chat_proxy bridge ready")
           const msgs = [systemMsg, userMsg];
           const msgsJson = JSON.stringify(msgs);
           
-          if ((window as any).hypha_chat_proxy) {
-             const resultJson = await (window as any).hypha_chat_proxy(msgsJson, null, null, DEFAULT_CHAT_MODEL);
+           if ((window as any).hypha_chat_proxy) {
+             const titleModel = (model || DEFAULT_CHAT_MODEL).trim();
+             const resultJson = await (window as any).hypha_chat_proxy(msgsJson, null, null, titleModel);
              const result = JSON.parse(resultJson);
              if (result.choices && result.choices[0]) {
                  const title = result.choices[0].message.content.trim().replace(/^"|"$/g, '');
@@ -1873,7 +1895,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
       // Trigger title generation in background if this is the first few messages
       if (messages.length < 2 && activeSessionId) {
            // We don't await this to keep UI responsive
-           generateTitle(conversationWithUser, activeSessionId, selectedAgent.id); 
+         generateTitle(conversationWithUser, activeSessionId, selectedAgent.id, agentChatModel || DEFAULT_CHAT_MODEL); 
       }
       
       const historyJsonBase64 = toBase64Utf8(JSON.stringify(history));
