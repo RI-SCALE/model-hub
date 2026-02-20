@@ -4,8 +4,8 @@ import logging
 import os
 from typing import Any
 from urllib.parse import quote
-import httpx
 
+import httpx
 from hypha_rpc import api
 from openai import AsyncOpenAI
 
@@ -18,7 +18,7 @@ BIOSTUDIES_SEARCH_URL = "https://www.ebi.ac.uk/biostudies/api/v1/BioImages/searc
 
 
 def _build_biostudies_url(query: str, limit: int) -> str:
-    encoded = quote(query, safe='"()[]{}:*?+-/\\')
+    encoded = quote(query, safe='"()[]{}:*?+-/')
     bounded_limit = max(1, int(limit))
     return f"{BIOSTUDIES_SEARCH_URL}?query={encoded}&page=1&pageSize={bounded_limit}"
 
