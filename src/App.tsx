@@ -70,6 +70,8 @@ const AppContent: React.FC = () => {
             element={<About />} 
           />
           <Route path="/agents" element={<AgentPage />} />
+          <Route path="/agents/:workspace/:session" element={<AgentPage />} />
+          <Route path="/agents/:workspace/:session/*" element={<AgentPage />} />
           <Route path="/partners" element={<PartnersPage />} />
           <Route path="/models" element={<ArtifactGrid />} />
           <Route path="/upload" element={<Upload />} />

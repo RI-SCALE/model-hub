@@ -118,7 +118,7 @@ const RDFEditor: React.FC<RDFEditorProps> = ({
   const [isLicenseOpen, setIsLicenseOpen] = useState(false);
 
   // Combine local and remote suggestions and remove duplicates
-  const tagSuggestions = Array.from(new Set([...remoteSuggestions]));
+  const tagSuggestions = Array.from(new Set(remoteSuggestions));
 
   const sanitizeTag = (tag: string) => {
     // Convert to lowercase

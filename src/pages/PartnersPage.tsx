@@ -52,8 +52,8 @@ const PartnersPage = () => {
             className="max-h-full max-w-full object-contain transition-all duration-300"
             onError={(e) => {
                 const img = e.target as HTMLImageElement;
-                if (img.src !== window.location.origin + '/static/img/ri-scale-alt-logo.png') {
-                    img.src = window.location.origin + '/static/img/ri-scale-alt-logo.png';
+                if (img.src !== globalThis.location.origin + '/static/img/ri-scale-alt-logo.png') {
+                    img.src = globalThis.location.origin + '/static/img/ri-scale-alt-logo.png';
                 }
             }}
         />

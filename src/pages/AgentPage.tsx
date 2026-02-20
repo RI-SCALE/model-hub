@@ -1,18 +1,53 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, Fragment } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { FiSend, FiCpu, FiTrash2, FiStopCircle, FiZap, FiAlertCircle, FiTerminal, FiEdit2, FiX } from 'react-icons/fi';
+import { FiSend, FiCpu, FiTrash2, FiStopCircle, FiZap, FiTerminal, FiEdit2, FiX, FiPlus, FiMessageSquare, FiChevronDown, FiUser, FiShare2, FiCopy, FiCheck, FiMenu } from 'react-icons/fi';
 import { useHyphaStore } from '../store/hyphaStore';
+import LoginButton from '../components/LoginButton';
 import { useKernel } from '../hooks/useKernel';
+import { useNavigate, useParams } from 'react-router-dom';
+import * as HeadlessUI from '@headlessui/react';
+
+const { MenuButton, MenuItems, MenuItem, Menu, Transition, DialogPanel, TransitionChild, DialogTitle, Dialog } = HeadlessUI;
+
 
 interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: Date;
+  progressTrace?: {
+    summary: string | null;
+    details: string[];
+  };
 }
+
+interface SessionInputDraftCache {
+  [sessionKey: string]: string;
+}
+
+const MAX_COLLAPSED_MESSAGE_CHARS = 1200;
+const MAX_COLLAPSED_MESSAGE_LINES = 16;
+const INPUT_DRAFT_CACHE_KEY = 'ri-scale-agent-input-drafts-v1';
+const DEFAULT_CHAT_MODEL = 'gpt-5-mini';
+const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
+const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
+const CHAT_PROXY_REQUEST_TIMEOUT_MS = 120_000;
+const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 15_000;
+const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 45_000;
+
+const getChatProxyServiceId = (): string => {
+  const isProductionBuild = process.env.NODE_ENV === 'production';
+  const configuredAppId = (process.env.REACT_APP_CHAT_PROXY_APP_ID || '').trim();
+  const primaryAppId = isProductionBuild
+    ? (configuredAppId || PRODUCTION_CHAT_PROXY_APP_ID)
+    : DEFAULT_DEV_CHAT_PROXY_APP_ID;
+  return `ri-scale/default@${primaryAppId}`;
+};
+
+const CHAT_PROXY_SERVICE_ID = getChatProxyServiceId();
 
 interface Agent {
   id: string; // Artifact ID
@@ -21,6 +56,13 @@ interface Agent {
   icon?: string;
   status: 'online' | 'offline';
   service_id?: string; // If available
+}
+
+interface Session {
+  id: string; // Artifact ID
+  title: string;
+  agentId: string;
+  lastModified: number;
 }
 
 const CodeBlock = ({ node, inline, className, children, ...props }: any) => {
@@ -41,8 +83,27 @@ const CodeBlock = ({ node, inline, className, children, ...props }: any) => {
   );
 };
 
+const toBase64Utf8 = (value: string): string => {
+  return globalThis.btoa(unescape(encodeURIComponent(value)));
+};
+
 const AgentPage: React.FC = () => {
-  const { server, isConnected, connect, isConnecting } = useHyphaStore();
+  const { server, isConnected, connect, isConnecting, isLoggedIn, login } = useHyphaStore();
+  const { workspace, session, '*': extraPath } = useParams<{ workspace?: string; session?: string; '*': string }>();
+  const navigate = useNavigate();
+
+  const toRouteSessionId = (artifactId: string, ws: string) => {
+    const prefix = `${ws}/`;
+    if (artifactId.startsWith(prefix)) {
+      return artifactId.slice(prefix.length);
+    }
+    return artifactId;
+  };
+
+  const sessionFromRoute = session
+    ? (extraPath ? `${session}/${extraPath}` : session)
+    : undefined;
+
   const { 
     isReady: isKernelReady, 
     startKernel, 
@@ -63,6 +124,569 @@ const AgentPage: React.FC = () => {
   const [agentError, setAgentError] = useState<string | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [agentReady, setAgentReady] = useState(false);
+  const [agentProgress, setAgentProgress] = useState<string | null>(null);
+  const [agentProgressDetails, setAgentProgressDetails] = useState<string[]>([]);
+  const [showAgentProgressDetails, setShowAgentProgressDetails] = useState(false);
+  const [typingSessionKey, setTypingSessionKey] = useState<string | null>(null);
+  const [expandedMessageIds, setExpandedMessageIds] = useState<Record<string, boolean>>({});
+  const [expandedProgressMessageIds, setExpandedProgressMessageIds] = useState<Record<string, boolean>>({});
+  
+  // Sidebar State
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  
+  // Session State
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [sessionCollectionId, setSessionCollectionId] = useState<string | null>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitle, setEditingTitle] = useState('');
+  
+  // Share State
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [shareUrl, setShareUrl] = useState<string | null>(null);
+  const [hasCopied, setHasCopied] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const saveQueueRef = useRef<Promise<string | null>>(Promise.resolve(null));
+  const agentProgressRef = useRef<string | null>(null);
+  const agentProgressDetailsRef = useRef<string[]>([]);
+  const [agentSystemPrompt, setAgentSystemPrompt] = useState<string | null>(null);
+  const [agentWelcomeMessage, setAgentWelcomeMessage] = useState<string | null>(null);
+  const [agentChatModel, setAgentChatModel] = useState<string>(DEFAULT_CHAT_MODEL);
+
+  const defaultAgentId = 'hypha-agents/grammatical-deduction-bury-enormously';
+    const LOCAL_DRAFT_SESSION_ID = '__local_draft_session__';
+    const ANONYMOUS_SESSION_KEY = '__anonymous_chat__';
+    const DEFAULT_CHAT_TITLE = 'New Chat';
+
+    const getSessionKey = (sessionId: string | null) => {
+      if (sessionId) return sessionId;
+      return isLoggedIn ? LOCAL_DRAFT_SESSION_ID : ANONYMOUS_SESSION_KEY;
+    };
+
+    const readInputDraftCache = (): SessionInputDraftCache => {
+      try {
+        const raw = globalThis.localStorage.getItem(INPUT_DRAFT_CACHE_KEY);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          return parsed as SessionInputDraftCache;
+        }
+      } catch {
+      }
+      return {};
+    };
+
+    const writeInputDraftCache = (cache: SessionInputDraftCache) => {
+      try {
+        globalThis.localStorage.setItem(INPUT_DRAFT_CACHE_KEY, JSON.stringify(cache));
+      } catch {
+      }
+    };
+
+    const persistInputDraft = (sessionKey: string, draftText: string) => {
+      const cache = readInputDraftCache();
+      if (!draftText.trim()) {
+        if (sessionKey in cache) {
+          delete cache[sessionKey];
+          writeInputDraftCache(cache);
+        }
+        return;
+      }
+      cache[sessionKey] = draftText;
+      writeInputDraftCache(cache);
+    };
+
+    const getInputDraft = (sessionKey: string) => {
+      const cache = readInputDraftCache();
+      return cache[sessionKey] || '';
+    };
+
+    const currentSessionKeyRef = useRef<string>(getSessionKey(currentSessionId));
+
+    const getWelcomeMessages = () => {
+      const welcomeText = (agentWelcomeMessage && agentWelcomeMessage.trim())
+        ? agentWelcomeMessage
+        : `Hello! I'm ${selectedAgent?.name || 'your assistant'}, how may I help you today?`;
+      return [{
+        id: `welcome-${Date.now()}`,
+        role: 'assistant' as const,
+        content: welcomeText,
+        timestamp: new Date()
+      }];
+    };
+
+    const createLocalDraftSession = (): Session => ({
+      id: LOCAL_DRAFT_SESSION_ID,
+      title: DEFAULT_CHAT_TITLE,
+      agentId: selectedAgent?.id || defaultAgentId,
+      lastModified: Date.now()
+    });
+
+    const ensureLocalDraftSession = () => {
+      setSessions(prev => {
+        const withoutDraft = prev.filter(s => s.id !== LOCAL_DRAFT_SESSION_ID);
+        return [createLocalDraftSession(), ...withoutDraft];
+      });
+      setCurrentSessionId(LOCAL_DRAFT_SESSION_ID);
+    };
+
+    useEffect(() => {
+      currentSessionKeyRef.current = getSessionKey(currentSessionId);
+    }, [currentSessionId, isLoggedIn]);
+
+    useEffect(() => {
+      const sessionKey = getSessionKey(currentSessionId);
+      const savedDraft = getInputDraft(sessionKey);
+      setInput(savedDraft);
+    }, [currentSessionId, isLoggedIn]);
+
+    useEffect(() => {
+      const sessionKey = getSessionKey(currentSessionId);
+      persistInputDraft(sessionKey, input);
+    }, [input, currentSessionId, isLoggedIn]);
+
+  // Helper to ensure session collection exists
+  const ensureSessionCollection = async () => {
+    if (!server || !isLoggedIn) return null;
+    try {
+      const am = await server.getService('public/artifact-manager');
+      const collectionAlias = 'ri-scale-model-hub-sessions';
+      const myWorkspace = server.config.workspace;
+      const fullId = `${myWorkspace}/${collectionAlias}`;
+
+      try {
+        const existing = await am.read({
+          artifact_id: fullId,
+          _rkwargs: true
+        });
+        setSessionCollectionId(existing.id);
+        return existing.id;
+      } catch {
+        console.log("Creating session collection...");
+        const created = await am.create({
+          artifact_id: fullId,
+          type: "collection",
+          manifest: {
+            name: "Agent Chat Sessions",
+            description: "Collection of chat sessions for RI-SCALE Model Hub",
+          },
+          _rkwargs: true
+        });
+        setSessionCollectionId(created.id);
+        return created.id;
+      }
+    } catch (e) {
+      console.error("Error ensuring session collection:", e);
+      return null;
+    }
+  };
+
+  // Helper to save current session
+  const saveSession = async (sessionId: string | null, msgs: Message[], agId: string, title?: string) => {
+    const doSave = async () => {
+      if (!server || !isLoggedIn) return null;
+      
+      // Check if we are "forking" a shared session
+      // If sessionId is provided, check if it belongs to another workspace
+      if (sessionId && sessionId.includes('/') && !sessionId.startsWith(server.config.workspace + '/')) {
+          sessionId = null; // Reset to null to trigger creation
+      }
+
+      if (!sessionCollectionId && !sessionId) {
+          // Try ensuring collection one last time
+          const colId = await ensureSessionCollection();
+          if (!colId) return null;
+      }
+      
+      const am = await server.getService('public/artifact-manager');
+
+      let sessionTitle = title || DEFAULT_CHAT_TITLE;
+      const manifest = {
+        name: sessionTitle,
+        description: `Chat session with agent ${agId}`,
+        agent_id: agId,
+        timestamp: Date.now()
+      };
+      
+      try {
+          let artifactId = sessionId;
+          let createdNow = false;
+          
+          if (!artifactId) {
+              // Create new artifact
+              const created = await am.create({
+                  type: "generic",
+                  alias: "{uuid}",
+                  manifest: manifest,
+                  config: {
+                    permissions: {
+                      "*": "n",
+                      "@": "n"
+                    },
+
+                  },
+                  parent_id: sessionCollectionId!,
+                  stage: true,
+                  _rkwargs: true
+              });
+                artifactId = created.id;
+                createdNow = true;
+              
+              // Add to local list immediately
+              const newSession: Session = {
+                id: artifactId!,
+                title: sessionTitle,
+                agentId: agId,
+                lastModified: manifest.timestamp
+              };
+              setSessions(prev => [
+                newSession,
+                ...prev.filter(s => s.id !== artifactId && s.id !== LOCAL_DRAFT_SESSION_ID)
+              ]);
+              
+          }
+
+          if (!artifactId) return null;
+
+          if (!createdNow && !title) {
+            try {
+              const existingArtifact = await am.read({
+                artifact_id: artifactId,
+                _rkwargs: true
+              });
+              if (existingArtifact?.manifest?.name) {
+                sessionTitle = existingArtifact.manifest.name;
+                manifest.name = sessionTitle;
+              }
+            } catch {
+            }
+
+            setSessions(prev => prev.map(s => {
+              if (s.id === artifactId) {
+                return {
+                  ...s,
+                  title: sessionTitle,
+                  lastModified: manifest.timestamp,
+                  agentId: agId
+                };
+              }
+              return s;
+            }));
+          }
+
+          await am.edit({
+              artifact_id: artifactId,
+              manifest,
+              stage: true,
+              _rkwargs: true
+          });
+
+          const messagesJson = JSON.stringify(msgs);
+          const file = new Blob([messagesJson], { type: 'application/json' });
+          // We need to use put_file from artifact manager which returns a URL, then PUT to it
+          let putUrl: string;
+          try {
+            putUrl = await am.put_file({
+              artifact_id: artifactId,
+              file_path: "messages.json",
+              _rkwargs: true
+            });
+          } catch (putError: any) {
+            const message = String(putError?.message || putError || '');
+            if (!message.includes('Artifact must be in staging mode')) {
+              throw putError;
+            }
+
+            await am.edit({
+              artifact_id: artifactId,
+              manifest,
+              stage: true,
+              _rkwargs: true
+            });
+
+            putUrl = await am.put_file({
+              artifact_id: artifactId,
+              file_path: "messages.json",
+              _rkwargs: true
+            });
+          }
+          
+          await fetch(putUrl, {
+              method: 'PUT',
+              body: file,
+              headers: { "Content-Type": "application/json" }
+          });
+
+          try {
+            await am.commit({
+              artifact_id: artifactId,
+              _rkwargs: true
+            });
+          } catch (commitError: any) {
+            const message = String(commitError?.message || commitError || '');
+            if (!message.includes('Artifact must be in staging mode')) {
+              throw commitError;
+            }
+
+            await am.edit({
+              artifact_id: artifactId,
+              manifest,
+              stage: true,
+              _rkwargs: true
+            });
+
+            const retryPutUrl = await am.put_file({
+              artifact_id: artifactId,
+              file_path: "messages.json",
+              _rkwargs: true
+            });
+
+            await fetch(retryPutUrl, {
+              method: 'PUT',
+              body: file,
+              headers: { "Content-Type": "application/json" }
+            });
+
+            await am.commit({
+              artifact_id: artifactId,
+              _rkwargs: true
+            });
+          }
+
+          if (createdNow) {
+            setCurrentSessionId(artifactId);
+            const ws = server.config.workspace;
+            const routeSessionId = toRouteSessionId(artifactId, ws);
+            navigate(`/agents/${ws}/${routeSessionId}`, { replace: true });
+          }
+          
+          return artifactId;
+      } catch (e) {
+          console.error("Error saving session:", e);
+          return null;
+      }
+        };
+
+        const queued = saveQueueRef.current.then(doSave, doSave);
+        saveQueueRef.current = queued.catch(() => null);
+        return queued;
+  };
+
+  // Helper to load session
+  const fetchSessionData = async (sessionId: string, workspace: string) => {
+      if (!server) return;
+      try {
+          const am = await server.getService('public/artifact-manager');
+          // Construct full ID if necessary
+          const fullId = sessionId.includes('/') ? sessionId : `${workspace}/${sessionId}`;
+          
+          let artifact;
+          try {
+              artifact = await am.read({
+                artifact_id: fullId,
+                _rkwargs: true
+              });
+          } catch (e) {
+              console.warn("Session not found or accessible:", fullId);
+              // Fallback to new chat if not found
+              if (isLoggedIn) {
+                ensureLocalDraftSession();
+                navigate('/agents', { replace: true });
+              } else {
+                setCurrentSessionId(null);
+              }
+              setMessages(getWelcomeMessages());
+              return;
+          }
+          
+          const agentId = artifact.manifest.agent_id || defaultAgentId;
+          
+          // Try to find in existing list
+          let targetAgent = agents.find(a => a.id === agentId) || agents.find(a => a.id.includes(agentId));
+          
+          if (!targetAgent) {
+              // try to fetch the agent artifact directly
+              try {
+                  const agentArtifact = await am.read({
+                    artifact_id: agentId,
+                    _rkwargs: true
+                  });
+
+                  targetAgent = {
+                      id: agentArtifact.id,
+                      name: agentArtifact.manifest?.name || agentArtifact.alias || 'Unnamed Agent',
+                      description: agentArtifact.manifest?.description || 'No description provided.',
+                      icon: agentArtifact.manifest?.icon,
+                      status: 'online', 
+                      service_id: agentArtifact.alias ? `hypha-agents/${agentArtifact.alias}` : undefined
+                  };
+                  // Update agents list with this new found agent? Maybe not necessary, just select it.
+                  setAgents(prev => [...prev, targetAgent!]);
+              } catch (e) {
+                  console.warn("Could not fetch agent details:", agentId);
+              }
+          }
+
+          if (targetAgent) {
+              setSelectedAgent(targetAgent);
+          }
+          
+          // Load messages
+          try {
+              const fileUrl = await am.get_file({
+                artifact_id: fullId,
+                file_path: "messages.json",
+                _rkwargs: true
+              });
+              const res = await fetch(fileUrl);
+              const loadedMessages = await res.json();
+              // Fix dates
+              const processedMessages = loadedMessages.map((m: any) => ({
+                  ...m,
+                  timestamp: new Date(m.timestamp)
+              }));
+              setMessages(processedMessages);
+          } catch (e) {
+              try {
+                const stagedFileUrl = await am.get_file({
+                  artifact_id: fullId,
+                  file_path: "messages.json",
+                  version: "stage",
+                  _rkwargs: true
+                });
+                const stagedRes = await fetch(stagedFileUrl);
+                const stagedMessages = await stagedRes.json();
+                const processedStagedMessages = stagedMessages.map((m: any) => ({
+                    ...m,
+                    timestamp: new Date(m.timestamp)
+                }));
+                setMessages(processedStagedMessages);
+              } catch {
+                console.warn("No messages found for session", fullId);
+                setMessages([]);
+              }
+          }
+          
+          // Set current session ID only if we are the owner, otherwise we are in "clone" mode (new chat on next message)
+          // Actually, if we are viewing a shared session, we probably want to keep the ID so we know what we are viewing.
+          // The instruction says "if you change to a different chat, wether you own it or not, update those accorfdingly"
+          // This implies we should stay on the URL.
+          // If we send a message, THEN we might need to fork if we don't have write access.
+          
+          setCurrentSessionId(fullId);
+          if (isLoggedIn) {
+            setSessions(prev => {
+              const hasDraft = prev.some(s => s.id === LOCAL_DRAFT_SESSION_ID);
+              if (hasDraft) return prev;
+              return [createLocalDraftSession(), ...prev];
+            });
+          }
+
+      } catch (e) {
+          console.error("Error loading session:", e);
+          // If error (e.g. 404), treat as new chat
+          if (isLoggedIn) {
+            ensureLocalDraftSession();
+          } else {
+            setCurrentSessionId(null);
+          }
+          setMessages(getWelcomeMessages());
+      }
+  };
+
+  const loadSession = (sessionId: string) => {
+      if (!server) return;
+      if (sessionId === LOCAL_DRAFT_SESSION_ID) {
+        navigate('/agents');
+        setCurrentSessionId(LOCAL_DRAFT_SESSION_ID);
+        setMessages([]);
+        return;
+      }
+      const ws = server.config.workspace;
+      const routeSessionId = toRouteSessionId(sessionId, ws);
+      navigate(`/agents/${ws}/${routeSessionId}`);
+  };
+
+  const deleteSession = async (sessionId: string) => {
+      if (!server || !globalThis.confirm("Are you sure you want to delete this chat session?")) return;
+      
+      try {
+          const am = await server.getService('public/artifact-manager');
+            if (sessionId === LOCAL_DRAFT_SESSION_ID) {
+              setSessions(prev => prev.filter(s => s.id !== LOCAL_DRAFT_SESSION_ID));
+              handleNewChat();
+              return;
+            }
+            await am.delete({
+              artifact_id: sessionId,
+              _rkwargs: true
+            });
+          setSessions(prev => prev.filter(s => s.id !== sessionId));
+          if (currentSessionId === sessionId) {
+              handleNewChat();
+          }
+      } catch (e) {
+          console.error("Error deleting session:", e);
+      }
+  };
+  
+  const handleNewChat = () => {
+      setMessages([]);
+      ensureLocalDraftSession();
+      navigate('/agents');
+  };
+
+  const handleShareSession = async () => {
+    if (!currentSessionId || !server) return;
+    
+    try {
+        const am = await server.getService('public/artifact-manager');
+        // Update visibility to public
+        await am.edit({
+          artifact_id: currentSessionId,
+          visibility: "public",
+          config: {
+            permissions: {
+              "*": "r",
+              "@": "r+"
+            },
+          },
+          _rkwargs: true
+        });
+        
+        const workspace = server.config.workspace;
+        // Use the new route format
+        const routeSessionId = toRouteSessionId(currentSessionId, workspace);
+        const url = `${globalThis.location.origin}/#/agents/${workspace}/${routeSessionId}`;
+        setShareUrl(url);
+        setIsShareModalOpen(true);
+        setHasCopied(false);
+    } catch (e: any) {
+        console.error("Error sharing session:", e);
+        alert("Failed to share session. Ensure you have permission or the server is reachable.");
+    }
+  };
+
+  const copyToClipboard = () => {
+      if (shareUrl) {
+          navigator.clipboard.writeText(shareUrl);
+          setHasCopied(true);
+          setTimeout(() => setHasCopied(false), 2000);
+      }
+  };
+
+  const copyTextWithFeedback = async (text: string, key: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedKey(key);
+      setTimeout(() => {
+        setCopiedKey(prev => (prev === key ? null : prev));
+      }, 1500);
+    } catch (copyError) {
+      console.error('Failed to copy text:', copyError);
+    }
+  };
 
   // Initialize kernel if not ready
   useEffect(() => {
@@ -71,7 +695,103 @@ const AgentPage: React.FC = () => {
     }
   }, [isKernelReady, kernelStatus, startKernel]);
 
-  // Load and start agent when selected
+  // Fetch agents and sessions
+  useEffect(() => {
+      const init = async () => {
+           if (!server) return;
+           
+           setLoadingAgents(true);
+           setLoadingSessions(true);
+           
+           try {
+               const am = await server.getService('public/artifact-manager');
+               
+               // 1. Fetch Agents
+                 const initialAgents = await am.list({
+                   parent_id: 'hypha-agents/agents',
+                   limit: 100,
+                   _rkwargs: true
+                 });
+               
+               const mappedAgents: Agent[] = initialAgents.map((art: any) => ({
+                   id: art.id,
+                   name: art.manifest?.name || art.alias || 'Unnamed Agent',
+                   description: art.manifest?.description || 'No description provided.',
+                   icon: art.manifest?.icon,
+                   status: 'online', 
+                   service_id: art.alias ? `hypha-agents/${art.alias}` : undefined
+               }));
+               
+               setAgents(mappedAgents);
+               setLoadingAgents(false);
+               
+               // Set default agent if none selected
+               if (!selectedAgent && mappedAgents.length > 0 && !session) {
+                   const def = mappedAgents.find(a => a.id === defaultAgentId || a.id.includes('grammatical-deduction'));
+                   setSelectedAgent(def || mappedAgents[0]);
+               }
+
+               // 2. Fetch Sessions
+               const colId = await ensureSessionCollection();
+               if (colId) {
+                     const sessionsList = await am.list({
+                       parent_id: colId,
+                       _rkwargs: true
+                     });
+                   const localSessions: Session[] = sessionsList.map((s: any) => ({
+                       id: s.id,
+                       title: s.manifest?.name || DEFAULT_CHAT_TITLE,
+                       agentId: s.manifest?.agent_id || defaultAgentId,
+                       lastModified: s.manifest?.timestamp || 0
+                   })).sort((a: any, b: any) => b.lastModified - a.lastModified);
+                   
+                  if (isLoggedIn) {
+                    setSessions([createLocalDraftSession(), ...localSessions]);
+                    if (!sessionFromRoute) {
+                      setCurrentSessionId(LOCAL_DRAFT_SESSION_ID);
+                    }
+                  } else {
+                    setSessions(localSessions);
+                  }
+               }
+               setLoadingSessions(false);
+               
+           } catch (e: any) {
+               console.error("Error initializing AgentPage:", e);
+               setAgentError(e.message);
+               setLoadingAgents(false);
+               setLoadingSessions(false);
+           }
+      };
+      
+      if (isConnected && server) {
+          init();
+      }
+  }, [server, isConnected, isLoggedIn, sessionFromRoute]); 
+
+  // Load session from URL
+    useEffect(() => {
+      if (workspace && sessionFromRoute && server) {
+        console.log("Loading session from URL:", workspace, sessionFromRoute);
+        fetchSessionData(sessionFromRoute, workspace);
+
+        // Normalize malformed URLs like /agents/ws/ws/uuid -> /agents/ws/uuid
+        if (extraPath) {
+          const routeSessionId = toRouteSessionId(sessionFromRoute, workspace);
+          navigate(`/agents/${workspace}/${routeSessionId}`, { replace: true });
+        }
+      } else if (!sessionFromRoute && server) {
+          // New chat mode
+          if (isLoggedIn) {
+            ensureLocalDraftSession();
+          } else {
+            setCurrentSessionId(null);
+          }
+          setMessages(getWelcomeMessages());
+      }
+    }, [workspace, sessionFromRoute, extraPath, server, navigate, isLoggedIn, agentWelcomeMessage]);
+
+  // Load and start agent when selected (Keep existing logic but wrap)
   useEffect(() => {
     const loadAgent = async () => {
       // If we don't have what we need, ensure ready state is false
@@ -88,13 +808,12 @@ const AgentPage: React.FC = () => {
         
         // 1. Get the artifact
         const am = await server.getService('public/artifact-manager');
-        const artifact = await am.read(selectedAgent.id);
+        const artifact = await am.read({
+          artifact_id: selectedAgent.id,
+          _rkwargs: true
+        });
         
         console.log("Agent artifact:", artifact);
-
-        if (!artifact.files) {
-            console.warn("Artifact has no files listed. Artifact:", artifact);
-        }
         
         const files = artifact.files || [];
         const manifest = artifact.manifest || {};
@@ -107,7 +826,11 @@ const AgentPage: React.FC = () => {
 
         if (reqFile) {
             console.log("Installing dependencies from requirements.txt...");
-            const reqUrl = await am.get_file(selectedAgent.id, reqFile.name);
+            const reqUrl = await am.get_file({
+              artifact_id: selectedAgent.id,
+              file_path: reqFile.name,
+              _rkwargs: true
+            });
             const reqResponse = await fetch(reqUrl);
             const reqText = await reqResponse.text();
             
@@ -120,11 +843,16 @@ const AgentPage: React.FC = () => {
 
         if (packages.length > 0) {
             const packagesJson = JSON.stringify(packages);
+            const chatProxyServiceIdLiteral = CHAT_PROXY_SERVICE_ID
+              .replaceAll('\\', '\\\\')
+              .replaceAll("'", "\\'");
             const installCode = `
 import micropip
 import json
 import traceback
 import js
+import asyncio
+from hypha_rpc import connect_to_server
 
 try:
     packages = json.loads('${packagesJson}')
@@ -134,14 +862,74 @@ try:
 except Exception as e:
     print(f"Error installing dependencies: {e}")
 
-from hypha_rpc import connect_to_server
-
 # Define the proxy function for compatibility with agents expecting js.hypha_chat_proxy
 _hypha_server_connection = None
 
 async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
   global _hypha_server_connection
   try:
+    test_mode = None
+    if hasattr(js, "globalThis"):
+      test_mode = getattr(js.globalThis, "__chatProxyTestMode", None)
+
+    if test_mode == "stall":
+      await asyncio.sleep(3600)
+
+    if test_mode == "upstream-error":
+      return json.dumps({"error": "simulated-upstream-error"})
+
+    # Prefer the JS-side proxy wrapper first.
+    # Wait for registration and avoid Python websocket fallback (known to be flaky in pyodide).
+    try:
+      msg_count = 0
+      try:
+        msg_count = len(json.loads(messages_json)) if messages_json else 0
+      except Exception:
+        msg_count = -1
+      for _ in range(40):
+        bridge = None
+        bridge_source = None
+        bridge = getattr(js, "__pyodide_chat_proxy_bridge", None)
+        if bridge is not None:
+          bridge_source = "js.__pyodide_chat_proxy_bridge"
+        if hasattr(js, "globalThis"):
+          if bridge is None:
+            bridge = getattr(js.globalThis, "hypha_chat_proxy", None)
+            if bridge is not None:
+              bridge_source = "js.globalThis.hypha_chat_proxy"
+          if bridge is None:
+            bridge = getattr(js.globalThis, "__pyodide_chat_proxy_bridge", None)
+            if bridge is not None:
+              bridge_source = "js.globalThis.__pyodide_chat_proxy_bridge"
+        if bridge is None:
+          bridge = getattr(js, "hypha_chat_proxy", None)
+          if bridge is not None:
+            bridge_source = "js.hypha_chat_proxy"
+        if bridge is None and hasattr(js, "window"):
+          bridge = getattr(js.window, "hypha_chat_proxy", None)
+          if bridge is not None:
+            bridge_source = "js.window.hypha_chat_proxy"
+        if bridge is None and hasattr(js, "window"):
+          bridge = getattr(js.window, "__pyodide_chat_proxy_bridge", None)
+          if bridge is not None:
+            bridge_source = "js.window.__pyodide_chat_proxy_bridge"
+
+        if bridge is not None:
+          print(f"DEBUG: Using JS chat proxy bridge via {bridge_source}; messages={msg_count}; model={model}")
+          js_result = await asyncio.wait_for(
+            bridge(messages_json, tools_json, tool_choice_json, model),
+            timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
+          )
+          if isinstance(js_result, str):
+            return js_result
+          return str(js_result)
+        await asyncio.sleep(0.25)
+      print(f"DEBUG: JS proxy wrapper not ready after wait; falling back to Python bridge; messages={msg_count}; model={model}")
+    except asyncio.TimeoutError:
+      return json.dumps({"error": "bridge-timeout: JS proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
+    except BaseException as js_exp:
+      print(f"DEBUG: JS proxy path unavailable, falling back to Python bridge: {js_exp}")
+
     messages = json.loads(messages_json)
     tools = json.loads(tools_json) if tools_json else None
     tool_choice = json.loads(tool_choice_json) if tool_choice_json and tool_choice_json != "auto" else tool_choice_json
@@ -150,73 +938,150 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
       print("DEBUG: Connecting to Hypha server for chat proxy...")
       _hypha_server_connection = await connect_to_server({
         "server_url": "https://hypha.aicell.io",
-        "method_timeout": 60
+        "method_timeout": 600
       })
 
     server = _hypha_server_connection
+    proxy = await server.get_service('${chatProxyServiceIdLiteral}', {"timeout": 600})
+    print("DEBUG: Python fallback resolved chat-proxy service")
 
-    proxy = await server.get_service("ri-scale/default@chat-proxy", {"mode": "random"})
-
-    result = await proxy.chat_completion(messages, tools, tool_choice, model)
+    result = await asyncio.wait_for(
+      proxy.chat_completion(messages, tools, tool_choice, model),
+      timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
+    )
+    print("DEBUG: Python fallback chat_completion returned successfully")
     return json.dumps(result)
+  except asyncio.TimeoutError:
+    return json.dumps({"error": "bridge-timeout: proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
   except BaseException as e:
     print(f"DEBUG: Exception in hypha_chat_proxy bridge: {e}")
     traceback.print_exc()
     return json.dumps({"error": f"bridge-error: {str(e)}"})
 
-# Compatibility: some agent code paths call js.hypha_chat_proxy directly
-js.hypha_chat_proxy = hypha_chat_proxy
 print("DEBUG: hypha_chat_proxy bridge ready")
             `;
             await executeCode(installCode);
         }
 
-        // 3. Get startup script
-        // Strategy:
-        // A. check manifest['startup_script'] (can be code string)
-        // B. check main.py
-        // C. check .ipynb
-        
-        let scriptContent = "";
-        
-        if (manifest.startup_script && typeof manifest.startup_script === 'string') {
-             console.log("Loading startup script from manifest...");
-             scriptContent = manifest.startup_script;
-        } else {
-            const pyFiles = files.filter((f: any) => f.name.endsWith('.py'));
-            const mainFile = pyFiles.find((f: any) => f.name === 'main.py') || pyFiles[0];
-            
-            const notebookFiles = files.filter((f: any) => f.name.endsWith('.ipynb'));
-            const mainNotebook = notebookFiles[0];
+        // Agent metadata
+        // `startup_script` is used as system prompt metadata in this app,
+        // and `welcomeMessage` seeds new chats.
+        setAgentSystemPrompt(typeof manifest.startup_script === 'string' ? manifest.startup_script : null);
+        const welcomeText = typeof manifest.welcomeMessage === 'string'
+          ? manifest.welcomeMessage
+          : null;
+        setAgentWelcomeMessage(welcomeText);
+        setAgentChatModel(DEFAULT_CHAT_MODEL);
 
-            if (mainFile) {
-                console.log(`Loading startup script from ${mainFile.name}...`);
-                const fileUrl = await am.get_file(selectedAgent.id, mainFile.name);
-                const response = await fetch(fileUrl);
-                scriptContent = await response.text();
-            } else if (mainNotebook) {
-                console.log(`Loading startup script from notebook ${mainNotebook.name}...`);
-                const fileUrl = await am.get_file(selectedAgent.id, mainNotebook.name);
-                const response = await fetch(fileUrl);
-                const notebookJson = await response.json();
-                
-                // Extract code cells
-                const codeCells = notebookJson.cells.filter((c: any) => c.cell_type === 'code');
-                scriptContent = codeCells.map((c: any) => {
-                    const source = Array.isArray(c.source) ? c.source.join('') : c.source;
-                    return source;
-                }).join('\n\n');
-                
-                console.log("Extracted code from notebook.");
-            } else {
-                 throw new Error("No Python startup script found in agent artifact (manifest.startup_script, main.py, or .ipynb).");
-            }
+        // 3. Get startup script for kernel execution
+        const startupScriptRaw = manifest.startup_script;
+        if (typeof startupScriptRaw !== 'string' || !startupScriptRaw.trim()) {
+          throw new Error("Agent manifest.startup_script is required.");
         }
+        const scriptContent = startupScriptRaw.replace(/\r\n/g, '\n');
 
         console.log("Startup script content loaded.", scriptContent.substring(0, 100) + "...");
 
         // 4. Run the script
         await executeCode(scriptContent);
+
+        const isBioimageFinderScript =
+          scriptContent.includes('search_datasets') &&
+          scriptContent.includes('search_images');
+
+        if (isBioimageFinderScript) {
+          const bioimageProxyCompatibilityPatch = `
+    import json
+    import js
+    import httpx
+    from urllib.parse import quote
+
+    def _build_biostudies_url(query, limit):
+      encoded = quote(str(query), safe='"()[]{}:*?+-/')
+      bounded_limit = max(1, int(limit))
+      return f"https://www.ebi.ac.uk/biostudies/api/v1/BioImages/search?query={encoded}&page=1&pageSize={bounded_limit}"
+
+    async def _search_biostudies(kind, query, limit):
+      url = _build_biostudies_url(query, limit)
+      async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(url)
+        response.raise_for_status()
+        payload = response.json()
+
+      hits = payload.get("hits", []) if isinstance(payload, dict) else []
+      bounded_limit = max(1, int(limit))
+      top_hits = hits[:bounded_limit]
+
+      if kind == "images":
+        results = []
+        for item in top_hits:
+          results.append({
+            "id": item.get("id") or item.get("accession") or "",
+            "accession": item.get("accession") or "",
+            "title": item.get("title") or item.get("name") or item.get("accession") or "Untitled image",
+          })
+        return {
+          "query": query,
+          "url": url,
+          "total": payload.get("totalHits", len(hits)),
+          "results": results,
+          "source": "python-biostudies",
+        }
+
+      results = []
+      for item in top_hits:
+        accession = item.get("accession") or item.get("id") or ""
+        results.append({
+          "title": item.get("title") or item.get("name") or accession or "Untitled dataset",
+          "accession": accession,
+          "url": f"https://www.ebi.ac.uk/bioimage-archive/{accession}" if accession else None,
+        })
+      return {
+        "query": query,
+        "url": url,
+        "total": payload.get("totalHits", len(hits)),
+        "results": results,
+        "source": "python-biostudies",
+      }
+
+    async def _ri_scale_proxy_search(kind, query, limit=10):
+      bridge = None
+      bridge = getattr(js, "bioimage_archive_search", None)
+      if bridge is None and hasattr(js, "globalThis"):
+        bridge = getattr(js.globalThis, "bioimage_archive_search", None)
+      if bridge is None and hasattr(js, "window"):
+        bridge = getattr(js.window, "bioimage_archive_search", None)
+
+      if bridge is None:
+        print("DEBUG: bioimage_archive_search bridge missing; using python biostudies")
+        return await _search_biostudies(kind, query, limit)
+
+      try:
+        result = await bridge(kind, query, int(limit))
+        if hasattr(result, "to_py"):
+          result = result.to_py()
+        if isinstance(result, str):
+          result = json.loads(result)
+        if not isinstance(result, dict):
+          raise RuntimeError("Proxy returned unsupported response type")
+        if result.get("error"):
+          raise RuntimeError(str(result["error"]))
+        return result
+      except Exception as proxy_exp:
+        print(f"DEBUG: archive proxy failed for {kind}; using python biostudies: {proxy_exp}")
+        return await _search_biostudies(kind, query, limit)
+
+    async def search_datasets(query: str, limit: int = 10):
+      return await _ri_scale_proxy_search("datasets", query, limit)
+
+    async def search_images(query: str, limit: int = 10):
+      return await _ri_scale_proxy_search("images", query, limit)
+
+    print("DEBUG: BioImage Finder tools routed via stable biostudies search")
+          `;
+          await executeCode(bioimageProxyCompatibilityPatch);
+        }
+
         console.log("Agent startup script executed.");
         
         setAgentReady(true);
@@ -247,6 +1112,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
 
   
   const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const scrollToBottom = () => {
     if (messagesContainerRef.current) {
@@ -261,13 +1127,88 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     scrollToBottom();
   }, [messages]);
 
+  useEffect(() => {
+    if (!selectedAgent || !isKernelReady || !agentReady || isTyping) return;
+    const id = requestAnimationFrame(() => {
+      inputRef.current?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [selectedAgent, isKernelReady, agentReady, isTyping, sessionFromRoute, currentSessionId]);
+
+  useEffect(() => {
+    if (sessionFromRoute) return;
+    if (currentSessionId !== LOCAL_DRAFT_SESSION_ID) return;
+    if (messages.length > 0) return;
+    const welcome = getWelcomeMessages();
+    if (welcome.length > 0) {
+      setMessages(welcome);
+    }
+  }, [currentSessionId, sessionFromRoute, agentWelcomeMessage, messages.length]);
+
   // Expose proxy wrapper to Python environment
   useEffect(() => {
     // Only set up the proxy when the server is connected and available
     if (server) {
       console.log("AgentPage: Registering hypha_chat_proxy...");
-      (window as any).hypha_chat_proxy = async (messages: string | any, tools: string | any, tool_choice: string | any, model: string) => {
+      (globalThis as any).__chatProxyServiceId = CHAT_PROXY_SERVICE_ID;
+      let cachedChatProxyService: any = null;
+      (globalThis as any).hypha_chat_proxy = async (messages: string | any, tools: string | any, tool_choice: string | any, model: string) => {
         try {
+           const testMode = (globalThis as any).__chatProxyTestMode;
+           if (testMode === 'stall') {
+             await new Promise(() => {
+             });
+           }
+           if (testMode === 'upstream-error') {
+             return JSON.stringify({ error: 'simulated-upstream-error' });
+           }
+
+           const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, stage: string): Promise<T> => {
+             return await new Promise<T>((resolve, reject) => {
+               const timer = globalThis.setTimeout(() => {
+                 reject(new Error(`Timeout after ${Math.floor(timeoutMs / 1000)}s during ${stage}`));
+               }, timeoutMs);
+
+               promise
+                 .then((value) => {
+                   globalThis.clearTimeout(timer);
+                   resolve(value);
+                 })
+                 .catch((error) => {
+                   globalThis.clearTimeout(timer);
+                   reject(error);
+                 });
+             });
+           };
+
+           const resolveChatProxyService = async (forceRefresh: boolean = false) => {
+             if (!forceRefresh && cachedChatProxyService) {
+               return cachedChatProxyService;
+             }
+
+             let lastError: Error | null = null;
+             for (let attempt = 1; attempt <= 3; attempt += 1) {
+               try {
+                 const resolved: any = await withTimeout(
+                   server.getService(CHAT_PROXY_SERVICE_ID, { timeout: 600 }),
+                   CHAT_PROXY_RESOLVE_TIMEOUT_MS,
+                   `service resolution for ${CHAT_PROXY_SERVICE_ID} (attempt ${attempt})`
+                 );
+                 if (!resolved || typeof resolved.chat_completion !== 'function') {
+                   throw new Error('Proxy service found but has no chat_completion method.');
+                 }
+                 cachedChatProxyService = resolved;
+                 return resolved;
+               } catch (resolveError: any) {
+                 lastError = resolveError instanceof Error ? resolveError : new Error(String(resolveError));
+                 if (attempt < 3) {
+                   await new Promise(resolve => setTimeout(resolve, 400 * attempt));
+                 }
+               }
+             }
+             throw lastError || new Error('Unable to resolve chat proxy service.');
+           };
+
            console.log("AgentPage: hypha_chat_proxy called with model:", model);
            const args = {
               messages: typeof messages === 'string' ? JSON.parse(messages) : messages,
@@ -277,7 +1218,11 @@ print("DEBUG: hypha_chat_proxy bridge ready")
            };
            
              console.log("AgentPage: Resolving chat proxy service...");
-             const proxy = await server.getService("ri-scale/default@chat-proxy", { mode: "random" });
+             const proxy: any = await resolveChatProxyService();
+
+             if (!proxy) {
+              throw new Error('Unable to resolve chat proxy service.');
+             }
 
            console.log("AgentPage: invoking chat_completion...");
            // Ensure proxy is valid before calling
@@ -285,7 +1230,21 @@ print("DEBUG: hypha_chat_proxy bridge ready")
                throw new Error("Proxy service found but has no chat_completion method.");
            }
 
-           const result = await proxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model);
+           let result: any;
+           try {
+             result = await withTimeout(
+               proxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
+               CHAT_PROXY_COMPLETION_TIMEOUT_MS,
+               `chat_completion response from ${CHAT_PROXY_SERVICE_ID}`
+             );
+           } catch (primaryError) {
+             const refreshedProxy: any = await resolveChatProxyService(true);
+             result = await withTimeout(
+               refreshedProxy.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
+               CHAT_PROXY_COMPLETION_TIMEOUT_MS,
+               `chat_completion response retry from ${CHAT_PROXY_SERVICE_ID}`
+             );
+           }
            console.log("AgentPage: chat_completion result:", result);
            
            return JSON.stringify(result);
@@ -296,10 +1255,140 @@ print("DEBUG: hypha_chat_proxy bridge ready")
           return JSON.stringify({ error: errorMsg });
         }
       };
+      (globalThis as any).__pyodide_chat_proxy_bridge = (globalThis as any).hypha_chat_proxy;
+
+      (globalThis as any).bioimage_archive_search = async (kind: string, query: string, limit: number = 10) => {
+        try {
+          const directArchiveSearch = async (searchKind: 'datasets' | 'images', searchQuery: string, searchLimit: number) => {
+            const fetchJson = async (url: string) => {
+              const controller = new AbortController();
+              const timer = globalThis.setTimeout(() => controller.abort(), 30_000);
+              try {
+                const response = await fetch(url, {
+                  method: 'GET',
+                  headers: { Accept: 'application/json' },
+                  signal: controller.signal,
+                });
+                if (!response.ok) {
+                  throw new Error(`Archive direct fetch failed: ${response.status} ${response.statusText}`);
+                }
+                return await response.json();
+              } finally {
+                globalThis.clearTimeout(timer);
+              }
+            };
+
+            const toDatasetResults = (items: any[]) => items.map((item: any) => {
+              const accession = item?.accession || item?.id || '';
+              return {
+                title: item?.title || item?.name || accession || 'Untitled dataset',
+                accession,
+                url: accession ? `https://www.ebi.ac.uk/bioimage-archive/${accession}` : null,
+              };
+            });
+
+            const encodedQuery = encodeURIComponent(searchQuery);
+            const bioStudiesUrl = `https://www.ebi.ac.uk/biostudies/api/v1/BioImages/search?query=${encodedQuery}&page=1&pageSize=${Math.max(1, Number(searchLimit) || 10)}`;
+            const bioStudiesPayload = await fetchJson(bioStudiesUrl);
+            const bioStudiesHits = Array.isArray(bioStudiesPayload?.hits) ? bioStudiesPayload.hits : [];
+            const bioStudiesSliced = bioStudiesHits.slice(0, Math.max(1, Number(searchLimit) || 10));
+
+            if (searchKind === 'images') {
+              const results = bioStudiesSliced.map((item: any) => ({
+                id: item?.id || item?.accession || '',
+                accession: item?.accession || '',
+                title: item?.title || item?.name || item?.accession || 'Untitled image',
+              }));
+              return {
+                query: searchQuery,
+                url: bioStudiesUrl,
+                total: Number(bioStudiesPayload?.totalHits) || bioStudiesHits.length,
+                results,
+                source: 'biostudies-direct',
+              };
+            }
+
+            return {
+              query: searchQuery,
+              url: bioStudiesUrl,
+              total: Number(bioStudiesPayload?.totalHits) || bioStudiesHits.length,
+              results: toDatasetResults(bioStudiesSliced),
+              source: 'biostudies-direct',
+            };
+          };
+
+          const resolveChatProxyService = async (forceRefresh: boolean = false) => {
+            if (!forceRefresh && cachedChatProxyService) {
+              return cachedChatProxyService;
+            }
+            const resolved: any = await server.getService(CHAT_PROXY_SERVICE_ID, { timeout: 600 });
+            cachedChatProxyService = resolved;
+            return resolved;
+          };
+
+          let proxy = await resolveChatProxyService();
+          if (!proxy) {
+            throw new Error('Unable to resolve chat proxy service.');
+          }
+          if (kind === 'datasets') {
+            if (typeof proxy.search_datasets !== 'function') {
+              return await directArchiveSearch('datasets', query, limit);
+            }
+            try {
+              const proxyResult = await proxy.search_datasets(query, limit);
+              if (proxyResult && typeof proxyResult === 'object' && 'error' in proxyResult && proxyResult.error) {
+                throw new Error(String(proxyResult.error));
+              }
+              return proxyResult;
+            } catch {
+              try {
+                proxy = await resolveChatProxyService(true);
+                const refreshedResult = await proxy.search_datasets(query, limit);
+                if (refreshedResult && typeof refreshedResult === 'object' && 'error' in refreshedResult && refreshedResult.error) {
+                  throw new Error(String(refreshedResult.error));
+                }
+                return refreshedResult;
+              } catch {
+                return await directArchiveSearch('datasets', query, limit);
+              }
+            }
+          }
+          if (kind === 'images') {
+            if (typeof proxy.search_images !== 'function') {
+              return await directArchiveSearch('images', query, limit);
+            }
+            try {
+              const proxyResult = await proxy.search_images(query, limit);
+              if (proxyResult && typeof proxyResult === 'object' && 'error' in proxyResult && proxyResult.error) {
+                throw new Error(String(proxyResult.error));
+              }
+              return proxyResult;
+            } catch {
+              try {
+                proxy = await resolveChatProxyService(true);
+                const refreshedResult = await proxy.search_images(query, limit);
+                if (refreshedResult && typeof refreshedResult === 'object' && 'error' in refreshedResult && refreshedResult.error) {
+                  throw new Error(String(refreshedResult.error));
+                }
+                return refreshedResult;
+              } catch {
+                return await directArchiveSearch('images', query, limit);
+              }
+            }
+          }
+          throw new Error(`Unsupported search kind: ${kind}`);
+        } catch (e: any) {
+          const errorMsg = e?.message || String(e);
+          return { error: errorMsg };
+        }
+      };
     } else {
         console.log("AgentPage: Server not ready, hypha_chat_proxy not registered.");
         // Clear it if server disconnects to avoid stale calls
-        (window as any).hypha_chat_proxy = undefined;
+      (globalThis as any).__chatProxyServiceId = undefined;
+        (globalThis as any).hypha_chat_proxy = undefined;
+        (globalThis as any).__pyodide_chat_proxy_bridge = undefined;
+        (globalThis as any).bioimage_archive_search = undefined;
     }
   }, [server]);
 
@@ -307,7 +1396,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
   useEffect(() => {
     if (!isConnected && !isConnecting && !server) {
       console.log("AgentPage: Connecting anonymously to Hypha...");
-      connect({ server_url: "https://hypha.aicell.io" }).catch(err => {
+      connect({ server_url: "https://hypha.aicell.io", method_timeout: 600 }).catch(err => {
         console.error("AgentPage: Failed to connect anonymously:", err);
         setAgentError("Failed to connect to AI Agent server.");
       });
@@ -327,23 +1416,15 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         // We need to pass positional arguments correctly to the list function in JS
         // list(parent_id, keywords, filters, limit, offset, order_by, pagination, context)
         // Since we can't easily pass keyword args, we use positional args with undefined for defaults
-        const initialAgents = await am.list(
-             'hypha-agents/agents', // parent_id
-             undefined, // keywords
-             undefined, // filters
-             100 // limit
-        );
+           const initialAgents = await am.list({
+             parent_id: 'hypha-agents/agents',
+             limit: 100,
+             _rkwargs: true
+           });
         console.log("AgentPage: Agents found:", initialAgents);
 
-        // Filter to only show the specific requested agent
-        const targetAgentAlias = 'grammatical-deduction-bury-enormously';
-        const filteredAgents = initialAgents.filter((agent: any) => 
-            agent.alias === targetAgentAlias || 
-          agent.id.includes(targetAgentAlias)
-        );
-
         // We assume all found agents are "online" (available to start via proxy)
-        const mappedAgents: Agent[] = filteredAgents.map((art: any) => {
+        const mappedAgents: Agent[] = initialAgents.map((art: any) => {
           const serviceId = art.alias ? `hypha-agents/${art.alias}` : undefined;
           
           return {
@@ -363,8 +1444,9 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         if (mappedAgents.length > 0) {
             setSelectedAgent(prev => {
                 if (!prev) {
-                    const firstOnline = mappedAgents.find(a => a.status === 'online');
-                    return firstOnline || mappedAgents[0];
+                    const targetAgentAlias = 'grammatical-deduction-bury-enormously';
+                    const defaultAgent = mappedAgents.find(a => a.id.includes(targetAgentAlias));
+                    return defaultAgent || mappedAgents[0];
                 }
                 return prev;
             });
@@ -381,25 +1463,14 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     }
   }, [server, isConnected]);
 
-  // Retrieve chat history when agent changes (optional, omitted for simplicity)
-  useEffect(() => {
-      if (selectedAgent) {
-          setMessages([
-              {
-                  id: 'welcome-' + selectedAgent.id,
-                  role: 'assistant',
-                  content: `Hello! I am **${selectedAgent.name}**. How can I assist you?`,
-                  timestamp: new Date()
-              }
-          ]);
-      }
-  }, [selectedAgent]);
+  // Removed automatic message reset on agent change to support switching agents mid-chat.
 
 
   const handleCancel = async () => {
     if (interruptKernel) {
       await interruptKernel();
       setIsTyping(false);
+      setTypingSessionKey(null);
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'system',
@@ -426,8 +1497,106 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     setMessages(prev => prev.slice(0, index));
   };
 
+  const isMessageExpandable = (msg: Message) => {
+    if (msg.role === 'user') return false;
+    const lineCount = msg.content.split('\n').length;
+    return msg.content.length > MAX_COLLAPSED_MESSAGE_CHARS || lineCount > MAX_COLLAPSED_MESSAGE_LINES;
+  };
+
+  const updateAgentProgress = (summary: string, detail?: string) => {
+    agentProgressRef.current = summary;
+    setAgentProgress(summary);
+    if (!detail) return;
+    const nextDetails = [...agentProgressDetailsRef.current, detail].slice(-30);
+    agentProgressDetailsRef.current = nextDetails;
+    setAgentProgressDetails(prev => {
+      const next = [...prev, detail];
+      return next.slice(-30);
+    });
+  };
+
+  const buildProgressTraceSnapshot = () => {
+    const summary = agentProgressRef.current;
+    const details = [...agentProgressDetailsRef.current];
+    if (!summary && details.length === 0) {
+      return undefined;
+    }
+    return {
+      summary,
+      details,
+    };
+  };
+
+  const parseProgressFromStdout = (rawContent: string) => {
+    const lines = rawContent
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean);
+
+    for (const line of lines) {
+      if (line.includes('__RESPONSE_START__:')) {
+        updateAgentProgress('Finalizing response...', 'Final response received.');
+        continue;
+      }
+      if (line.startsWith('Discovered ')) {
+        updateAgentProgress('Discovering available tools...', line);
+        continue;
+      }
+      if (line.startsWith('Calling tool:')) {
+        updateAgentProgress('Running a tool call...', line);
+        continue;
+      }
+      if (line.includes('DEBUG: Calling hypha_chat_proxy')) {
+        updateAgentProgress('Contacting chat proxy service...', line);
+        continue;
+      }
+      if (line.includes('DEBUG: hypha_chat_proxy returned:')) {
+        updateAgentProgress('Processing model response...', line);
+        continue;
+      }
+      if (line.includes('bridge-error')) {
+        updateAgentProgress('Chat proxy bridge reported an error.', line);
+        continue;
+      }
+      if (line.startsWith('DEBUG: Exception in hypha_chat_proxy bridge:')) {
+        updateAgentProgress('Chat proxy bridge exception.', line);
+      }
+    }
+  };
+
+  const generateTitle = async (messages: Message[], sessionId: string, agentId: string) => {
+      // Find the first user message
+      const firstUserMsg = messages.find(m => m.role === 'user');
+      if (!firstUserMsg || !server || !sessionId) return;
+      
+      try {
+          console.log("Generating title for session...", sessionId);
+          const systemMsg = { role: "system", content: "Generate a short, concise, 3-5 word title for this chat based on the user's message. Do not use quotes. Output only the title." };
+          const userMsg = { role: "user", content: firstUserMsg.content };
+          
+          const msgs = [systemMsg, userMsg];
+          const msgsJson = JSON.stringify(msgs);
+          
+          if ((window as any).hypha_chat_proxy) {
+             const resultJson = await (window as any).hypha_chat_proxy(msgsJson, null, null, DEFAULT_CHAT_MODEL);
+             const result = JSON.parse(resultJson);
+             if (result.choices && result.choices[0]) {
+                 const title = result.choices[0].message.content.trim().replace(/^"|"$/g, '');
+                 if (title) {
+                     console.log("Generated title:", title);
+                     await saveSession(sessionId, messages, agentId, title);
+                 }
+             }
+          }
+      } catch (e) {
+          console.error("Error generating title:", e);
+      }
+  };
+
   const handleSendMessage = async () => {
     if (!input.trim() || !selectedAgent || !server) return;
+
+    let requestSessionKey = getSessionKey(currentSessionId);
 
     const newMessage: Message = {
       id: Date.now().toString(),
@@ -439,25 +1608,128 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     setMessages(prev => [...prev, newMessage]);
     setInput('');
     setIsTyping(true);
+    setTypingSessionKey(requestSessionKey);
+    setAgentProgress('Preparing request...');
+    agentProgressRef.current = 'Preparing request...';
+    setAgentProgressDetails([]);
+    agentProgressDetailsRef.current = [];
+    setShowAgentProgressDetails(false);
+
+    const requestStartedAt = Date.now();
+    const progressHeartbeat = setInterval(() => {
+      const elapsedSeconds = Math.floor((Date.now() - requestStartedAt) / 1000);
+      updateAgentProgress(
+        `Still working... (${elapsedSeconds}s)`,
+        `Waiting for model/proxy response for ${elapsedSeconds}s`
+      );
+    }, 10000);
 
     try {
+      const conversationWithUser = [...messages, newMessage];
       // Prepare history for Python
       const history = messages
           .filter(m => m.role !== 'system')
           .map(m => ({ role: m.role, content: m.content }));
+
+        if (agentSystemPrompt) {
+          history.unshift({ role: 'system', content: agentSystemPrompt });
+        }
+
+      history.unshift({
+        role: 'system',
+        content: 'When tools/functions are available, prefer calling them to retrieve concrete results. Do not claim inability if a relevant tool exists.'
+      });
       
       // Add the new message
       history.push({ role: newMessage.role, content: newMessage.content });
       
-      const historyJson = JSON.stringify(history).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+      // Save Session Logic
+      let activeSessionId = currentSessionId === LOCAL_DRAFT_SESSION_ID ? null : currentSessionId;
+      
+      // Force fork check before saving (though saveSession handles it, we want the new ID for title gen)
+      // Actually saveSession returns the ID, so we use that.
+      
+      if (activeSessionId) {
+          // Check if we need to fork (if viewing shared session)
+          if (activeSessionId.includes('/') && !activeSessionId.startsWith(server.config.workspace + '/')) {
+               console.log("Forking shared session...");
+               // Reset to null effectively for saveSession, but we pass current just in case it needs ref (it doesn't currently)
+               // saveSession handles the fork logic if passed a foreign ID
+                 const newId = await saveSession(activeSessionId, conversationWithUser, selectedAgent.id);
+               if (newId) {
+                   setCurrentSessionId(newId);
+                   activeSessionId = newId;
+                   requestSessionKey = newId;
+                   setTypingSessionKey(newId);
+               }
+          } else {
+               // Update existing owned session
+               await saveSession(activeSessionId, conversationWithUser, selectedAgent.id);
+          }
+      } else {
+          // Create new session
+            const newId = await saveSession(null, conversationWithUser, selectedAgent.id);
+          if (newId) {
+              setCurrentSessionId(newId);
+              activeSessionId = newId;
+              requestSessionKey = newId;
+              setTypingSessionKey(newId);
+          }
+      }
+      
+      // Trigger title generation in background if this is the first few messages
+      if (messages.length < 2 && activeSessionId) {
+           // We don't await this to keep UI responsive
+           generateTitle(conversationWithUser, activeSessionId, selectedAgent.id); 
+      }
+      
+      const historyJsonBase64 = toBase64Utf8(JSON.stringify(history));
+      const chatModel = (agentChatModel || DEFAULT_CHAT_MODEL).replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+      const forceToolCallFirstTurn = /\b(find|search|lookup|look up|dataset|datasets|image|images|retrieve|fetch|list)\b/i.test(newMessage.content);
 
-      const pythonResponse = await new Promise<string>(async (resolve, reject) => {
+        const runChatExecution = async (): Promise<string> => {
+          return await new Promise<string>(async (resolve, reject) => {
+            let settled = false;
+            let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+
+            const cleanup = () => {
+              if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+                timeoutHandle = null;
+              }
+            };
+
+            const safeResolve = (value: string) => {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              updateAgentProgress('Response received.');
+              resolve(value);
+            };
+
+            const safeReject = (error: Error) => {
+              if (settled) return;
+              settled = true;
+              cleanup();
+              updateAgentProgress('Request failed.', error.message || 'Unknown error while executing chat.');
+              reject(error);
+            };
+
+            timeoutHandle = setTimeout(() => {
+              safeReject(
+                new Error(
+                  `Chat request timed out after ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s while waiting for ${CHAT_PROXY_SERVICE_ID}`
+                )
+              );
+            }, CHAT_PROXY_REQUEST_TIMEOUT_MS);
+
             const code = `
 import asyncio
 import js
 import json
 import traceback
 import inspect
+import base64
 
 # Helper to send response safely
 def send_response(data):
@@ -465,7 +1737,8 @@ def send_response(data):
 
 async def _chat_wrapper():
     try:
-        messages = json.loads('${historyJson}')
+        history_json = base64.b64decode('${historyJsonBase64}').decode('utf-8')
+        messages = json.loads(history_json)
         
         # Discover tools from globals
         tools = []
@@ -473,10 +1746,10 @@ async def _chat_wrapper():
         
         for name, func in globals().items():
             is_user_function = (
-                (inspect.isfunction(func) or inspect.iscoroutinefunction(func))
-                and getattr(func, '__module__', None) == '__main__'
+        (inspect.isfunction(func) or inspect.iscoroutinefunction(func))
+        and getattr(func, '__module__', None) == '__main__'
             )
-            if is_user_function and not name.startswith('_') and name not in ['send_response', '_chat_wrapper', 'exit', 'quit', 'get_ipython', 'open', 'print', 'help', 'AsyncOpenAI', 'connect_to_server', 'traceback', 'inspect', 'json', 'js', 'asyncio', 'hypha_chat_proxy']:
+            if is_user_function and not name.startswith('_') and name not in ['send_response', '_chat_wrapper', 'exit', 'quit', 'get_ipython', 'open', 'print', 'help', 'AsyncOpenAI', 'traceback', 'inspect', 'json', 'js', 'asyncio', 'hypha_chat_proxy']:
                 doc = inspect.getdoc(func) or "No description provided."
 
                 try:
@@ -507,13 +1780,15 @@ async def _chat_wrapper():
                 })
                 available_functions[name] = func
         
-        print(f"Discovered {len(tools)} tools: {[t['function']['name'] for t in tools]}")
+        if tools:
+          print(f"Discovered {len(tools)} tools: {[t['function']['name'] for t in tools]}")
         
         # Prepare arguments for hypha_chat_proxy
         # It expects JSON strings
         messages_json = json.dumps(messages)
         tools_json = json.dumps(tools) if tools else None
-        tool_choice_json = json.dumps("auto") if tools else None 
+        force_tool_call_first_turn = ${forceToolCallFirstTurn ? 'True' : 'False'}
+        tool_choice_json = json.dumps("required") if tools and force_tool_call_first_turn else (json.dumps("auto") if tools else None)
         
         print("DEBUG: Calling hypha_chat_proxy internal function...")
         # Route through JS wrapper via Python bridge
@@ -521,11 +1796,15 @@ async def _chat_wrapper():
             messages_json, 
             tools_json, 
             tool_choice_json, 
-            "gpt-4.1-nano-2025-04-14"
+          '${chatModel}'
         )
         print(f"DEBUG: hypha_chat_proxy returned: {result_json[:100]}...")
         
-        result = json.loads(result_json)
+        try:
+          result = json.loads(result_json)
+        except Exception as parse_err:
+          send_response({"text": f"Error from proxy: Invalid JSON response ({parse_err})"})
+          return
         
         if isinstance(result, dict) and "error" in result:
              send_response({"text": f"Error from proxy: {result['error']}"})
@@ -536,67 +1815,92 @@ async def _chat_wrapper():
         tool_calls = response_message.get('tool_calls')
         content = response_message.get('content')
         
-        if tool_calls:
-            # Append assistant's response (tool call request)
-            messages.append(response_message)
-            
-            for tool_call in tool_calls:
-                function_name = tool_call['function']['name']
-                # Arguments might be string or dict depending on how proxy returned it
-                args_content = tool_call['function']['arguments']
-                if isinstance(args_content, str):
-                    function_args = json.loads(args_content)
-                else:
-                    function_args = args_content
-                    
-                tool_call_id = tool_call['id']
-                
-                function_to_call = available_functions.get(function_name)
-                
-                if function_to_call:
-                    print(f"Calling tool: {function_name}({function_args})")
-                    try:
-                        if inspect.iscoroutinefunction(function_to_call):
-                            function_response = await function_to_call(**function_args)
-                        else:
-                            function_response = function_to_call(**function_args)
-                            
-                        messages.append({
-                            "tool_call_id": tool_call_id,
-                            "role": "tool",
-                            "name": function_name,
-                            "content": str(function_response),
-                        })
-                    except Exception as e:
-                        messages.append({
-                            "tool_call_id": tool_call_id,
-                            "role": "tool",
-                            "name": function_name,
-                            "content": f"Error: {str(e)}",
-                        })
-            
-            # Second call
-            # Re-serialize messages for the second call
-            messages_json_2 = json.dumps(messages)
-            
-            result_json_2 = await hypha_chat_proxy(
-                messages_json_2,
-                None,
-                None,
-                "gpt-4.1-nano-2025-04-14"
-            )
-            
-            result2 = json.loads(result_json_2)
-            
-            if isinstance(result2, dict) and "error" in result2:
-                 send_response({"text": f"Error from proxy: {result2['error']}"})
-                 return
-                 
-            final_content = result2['choices'][0]['message']['content']
-            send_response({"text": final_content})
-            
-        else:
+        max_turns = 6
+        turns = 0
+
+        while True:
+          tool_calls = response_message.get('tool_calls')
+          content = response_message.get('content')
+
+          if not tool_calls:
             send_response({"text": content})
+            return
+
+          if turns >= max_turns:
+            send_response({"text": "I reached the tool execution limit before finishing. Please try again."})
+            return
+
+          messages.append(response_message)
+
+          for tool_call in tool_calls:
+            function_name = tool_call['function']['name']
+            args_content = tool_call['function']['arguments']
+            try:
+              if isinstance(args_content, str):
+                function_args = json.loads(args_content)
+              else:
+                function_args = args_content
+            except Exception as arg_err:
+              messages.append({
+                "tool_call_id": tool_call.get('id', 'unknown-tool-call-id'),
+                "role": "tool",
+                "name": function_name,
+                "content": f"Error: Invalid tool arguments for '{function_name}': {str(arg_err)}",
+              })
+              continue
+
+            tool_call_id = tool_call['id']
+            function_to_call = available_functions.get(function_name)
+
+            if function_to_call:
+              print(f"Calling tool: {function_name}({function_args})")
+              try:
+                if inspect.iscoroutinefunction(function_to_call):
+                  function_response = await function_to_call(**function_args)
+                else:
+                  function_response = function_to_call(**function_args)
+
+                messages.append({
+                  "tool_call_id": tool_call_id,
+                  "role": "tool",
+                  "name": function_name,
+                  "content": str(function_response),
+                })
+              except Exception as e:
+                messages.append({
+                  "tool_call_id": tool_call_id,
+                  "role": "tool",
+                  "name": function_name,
+                  "content": f"Error: {str(e)}",
+                })
+            else:
+              messages.append({
+                "tool_call_id": tool_call_id,
+                "role": "tool",
+                "name": function_name,
+                "content": f"Error: Tool '{function_name}' is not available.",
+              })
+
+          turns += 1
+          next_tools_json = json.dumps(tools) if tools else None
+          next_tool_choice_json = json.dumps("auto") if tools else None
+          next_result_json = await hypha_chat_proxy(
+            json.dumps(messages),
+            next_tools_json,
+            next_tool_choice_json,
+            '${chatModel}'
+          )
+          try:
+            next_result = json.loads(next_result_json)
+          except Exception as parse_err:
+            send_response({"text": f"Error from proxy: Invalid JSON response ({parse_err})"})
+            return
+
+          if isinstance(next_result, dict) and "error" in next_result:
+            send_response({"text": f"Error from proxy: {next_result['error']}"})
+            return
+
+          response_message = next_result['choices'][0]['message']
 
     except Exception as e:
         traceback.print_exc()
@@ -604,48 +1908,95 @@ async def _chat_wrapper():
 
 await _chat_wrapper()
 `;
-        if (executeCode) {
-          await executeCode(code, {
-                 onOutput: (log) => {
-              if (log.type === 'error') {
-                reject(new Error(log.content || 'Kernel execution error'));
-                return;
-              }
-                    if (log.type === 'stdout') {
-                        const content = log.content;
-                        if (content.includes('__RESPONSE_START__:')) {
-                             const parts = content.split('__RESPONSE_START__:');
-                             if (parts.length > 1) {
-                                 try {
-                                     let jsonStr = parts[1].trim();
-                                     const parsed = JSON.parse(jsonStr);
-                                     resolve(typeof parsed === 'string' ? parsed : (parsed.text || JSON.stringify(parsed)));
-                                 } catch (e) {
-                                     resolve(parts[1].trim());
+            if (executeCode) {
+              await executeCode(code, {
+                     onOutput: (log) => {
+                  if (log.type === 'error') {
+                    safeReject(new Error(log.content || 'Kernel execution error'));
+                    return;
+                  }
+                        if (log.type === 'stdout') {
+                            const content = log.content;
+                            parseProgressFromStdout(content);
+                            if (content.includes('__RESPONSE_START__:')) {
+                                 const parts = content.split('__RESPONSE_START__:');
+                                 if (parts.length > 1) {
+                                     try {
+                                         let jsonStr = parts[1].trim();
+                                         const parsed = JSON.parse(jsonStr);
+                                         safeResolve(typeof parsed === 'string' ? parsed : (parsed.text || JSON.stringify(parsed)));
+                                     } catch (e) {
+                                         safeResolve(parts[1].trim());
+                                     }
                                  }
-                             }
+                            }
                         }
-                    }
-                     },
-                     onStatus: (status) => {
-                      if (status === 'Error') {
-                        reject(new Error('Kernel execution failed while sending message.'));
-                      }
-                 }
-             });
+                        if (log.type === 'stderr' && log.content) {
+                          const stderr = log.content.trim();
+                          if (stderr) {
+                            updateAgentProgress('Agent emitted runtime logs...', stderr);
+                          }
+                        }
+                         },
+                         onStatus: (status) => {
+                          if (status === 'Busy') {
+                            updateAgentProgress('Running in Python kernel...');
+                          }
+                          if (status === 'Error') {
+                            safeReject(new Error('Kernel execution failed while sending message.'));
+                          }
+                     }
+                 });
+            }
+
+                if (!executeCode) {
+                  safeResolve("No response from agent (execution unavailable).");
+                }
+            });
+        };
+
+        let pythonResponse = '';
+        const maxExecutionAttempts = 3;
+        let lastExecutionError: Error | null = null;
+        for (let attempt = 1; attempt <= maxExecutionAttempts; attempt += 1) {
+          try {
+            if (attempt > 1) {
+              updateAgentProgress('Retrying after kernel error...', `Execution attempt ${attempt}/${maxExecutionAttempts}`);
+            }
+            pythonResponse = await runChatExecution();
+            lastExecutionError = null;
+            break;
+          } catch (executionError: any) {
+            lastExecutionError = executionError instanceof Error ? executionError : new Error(String(executionError));
+            const errorText = String(lastExecutionError.message || lastExecutionError);
+            updateAgentProgress('Execution error encountered.', errorText);
+            const isRetriableError = /SyntaxError|expected 'except' or 'finally'|invalid syntax|timed out|bridge-timeout|proxy bridge unavailable/i.test(errorText);
+            if (!isRetriableError || attempt >= maxExecutionAttempts) {
+              break;
+            }
+          }
         }
-             
-             setTimeout(() => resolve("No response from agent (timeout)."), 65000);
-        });
-        
+
+        if (lastExecutionError) {
+          throw lastExecutionError;
+        }
+
         const responseText = pythonResponse;
+        const progressTrace = buildProgressTraceSnapshot();
         const responseMessage: Message = {
             id: (Date.now() + 1).toString(),
             role: 'assistant',
             content: responseText,
             timestamp: new Date(),
+          progressTrace,
         };
-        setMessages(prev => [...prev, responseMessage]);
+        const finalConversation = [...conversationWithUser, responseMessage];
+        if (activeSessionId) {
+          saveSession(activeSessionId, finalConversation, selectedAgent.id);
+        }
+        if (currentSessionKeyRef.current === requestSessionKey) {
+          setMessages(finalConversation);
+        }
 
     } catch (error: any) {
       console.error("Error sending message:", error);
@@ -653,11 +2004,17 @@ await _chat_wrapper()
         id: Date.now().toString(),
         role: 'system',
         content: `**Error**: ${error.message || 'Unknown error occurred during chat.'}`,
-        timestamp: new Date()
+        timestamp: new Date(),
+        progressTrace: buildProgressTraceSnapshot(),
       };
-      setMessages(prev => [...prev, errorResponse]);
+      updateAgentProgress('Request failed.', error.message || 'Unknown error occurred during chat.');
+      if (currentSessionKeyRef.current === requestSessionKey) {
+        setMessages(prev => [...prev, errorResponse]);
+      }
     } finally {
+        clearInterval(progressHeartbeat);
         setIsTyping(false);
+        setTypingSessionKey(null);
     }
   };
 
@@ -673,51 +2030,138 @@ await _chat_wrapper()
   };
 
   return (
-    <div className="flex h-[calc(100vh-80px)] bg-gray-50">
-      {/* Sidebar - Agent Selection */}
-      <div className="w-80 bg-white border-r border-gray-200 hidden md:flex flex-col">
+    (() => {
+      const currentSessionKey = getSessionKey(currentSessionId);
+      const showTypingForCurrentChat = isTyping && typingSessionKey === currentSessionKey;
+      return (
+    <div className="flex h-[calc(100vh-80px)] bg-gray-50 relative overflow-hidden">
+      {/* Mobile Sidebar Overlay */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black bg-opacity-50 z-20 md:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
+      {/* Sidebar - Sessions */}
+      <div className={`
+        absolute inset-y-0 left-0 z-30 w-80 bg-white border-r border-gray-200 flex flex-col transition-transform duration-300 ease-in-out md:relative md:translate-x-0
+        ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+      `}>
         <div className="p-4 border-b border-gray-100 flex items-center justify-between">
             <div className="flex items-center">
-                <FiZap className="mr-2 text-ri-orange" size={20} />
-                <h2 className="font-semibold text-lg text-gray-800">Agents</h2>
+                <FiMessageSquare className="mr-2 text-ri-orange" size={20} />
+                <h2 className="font-semibold text-lg text-gray-800">Chats</h2>
             </div>
-            {loadingAgents && <span className="text-xs text-gray-400">Loading...</span>}
+            <div className="flex items-center gap-2">
+                <button 
+                    onClick={handleNewChat}
+                    className="p-2 bg-ri-orange text-white rounded-lg hover:bg-orange-600 transition-colors"
+                    title="New Chat"
+                >
+                    <FiPlus size={20} />
+                </button>
+                <button 
+                  className="md:hidden p-2 text-gray-500 hover:text-gray-700"
+                  onClick={() => setIsSidebarOpen(false)}
+                >
+                  <FiX size={20} />
+                </button>
+            </div>
         </div>
         
-        {agentError && (
-            <div className="p-4 bg-red-50 text-red-600 text-sm flex items-center">
-                <FiAlertCircle className="mr-2" />
-                {agentError}
-            </div>
-        )}
+        {loadingSessions && <div className="p-4 text-xs text-center text-gray-400">Loading chats...</div>}
 
         <div className="overflow-y-auto flex-1 p-3 space-y-2">
-          {agents.map(agent => (
-            <button
-              key={agent.id}
-              onClick={() => setSelectedAgent(agent)}
-              className={`w-full text-left p-3 rounded-lg border transition-all duration-200 flex items-start space-x-3 
-                ${selectedAgent?.id === agent.id 
+          {!isLoggedIn ? (
+            <div className="flex flex-col items-center justify-center h-full p-4 text-center">
+              <FiUser className="text-gray-300 mb-2" size={32} />
+              <p className="text-sm text-gray-500 mb-4">Sign in to save your chat history</p>
+              <div className="w-full flex justify-center">
+                <LoginButton className="w-auto" />
+              </div>
+            </div>
+          ) : (
+            <>
+              {sessions.map(session => {
+              const isLocalDraft = session.id === LOCAL_DRAFT_SESSION_ID;
+              return (
+            <div
+              key={session.id}
+              className={`w-full text-left p-3 rounded-lg border transition-all duration-200 flex items-center justify-between group
+                ${currentSessionId === session.id 
                   ? 'border-ri-orange bg-orange-50 ring-1 ring-ri-orange' 
                   : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'}`}
             >
-              <div className={`mt-1 p-2 rounded-full ${selectedAgent?.id === agent.id ? 'bg-orange-100 text-ri-orange' : 'bg-gray-100 text-gray-500'}`}>
-                {agent.icon ? <img src={agent.icon} alt="" className="w-4 h-4 object-cover rounded-full" /> : <FiCpu size={18} />}
+              <button 
+                  onClick={() => loadSession(session.id)}
+                  className="flex-1 min-w-0 text-left mr-2"
+              >
+                  {editingSessionId === session.id && !isLocalDraft ? (
+                      <input 
+                          type="text" 
+                          value={editingTitle}
+                          onChange={(e) => setEditingTitle(e.target.value)}
+                          onBlur={() => {
+                              if (editingTitle.trim()) {
+                                  saveSession(session.id, messages, session.agentId, editingTitle);
+                              }
+                              setEditingSessionId(null);
+                          }}
+                          onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                  if (editingTitle.trim()) {
+                                      saveSession(session.id, messages, session.agentId, editingTitle);
+                                  }
+                                  setEditingSessionId(null);
+                              }
+                          }}
+                          autoFocus
+                          className="w-full text-sm font-medium border-none bg-transparent p-0 focus:ring-0"
+                      />
+                  ) : (
+                      <>
+                        <p className="font-medium text-gray-900 truncate">{session.title}</p>
+                        <p className="text-xs text-gray-400 mt-0.5 truncate">
+                            {new Date(session.lastModified).toLocaleDateString()}
+                        </p>
+                      </>
+                  )}
+              </button>
+              
+                {!isLocalDraft && (
+                <div className="opacity-0 group-hover:opacity-100 flex items-center space-x-1 transition-opacity">
+                  <button
+                      onClick={() => {
+                          setEditingTitle(session.title);
+                          setEditingSessionId(session.id);
+                      }}
+                      className="p-1.5 text-gray-400 hover:text-gray-600 rounded-md hover:bg-gray-200"
+                      title="Rename"
+                  >
+                      <FiEdit2 size={12} />
+                  </button>
+                  <button
+                      onClick={() => deleteSession(session.id)}
+                      className="p-1.5 text-gray-400 hover:text-red-500 rounded-md hover:bg-red-50"
+                      title="Delete"
+                  >
+                      <FiTrash2 size={12} />
+                  </button>
               </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between pointer-events-none">
-                    <p className="font-medium text-gray-900 truncate">{agent.name}</p>
-                    <span className={`h-2 w-2 rounded-full ${agent.status==='online'?'bg-green-500':'bg-red-500'}`} title={agent.status} />
-                </div>
-                <p className="text-sm text-gray-500 line-clamp-2 mt-0.5">{agent.description}</p>
-              </div>
-            </button>
-          ))}
-          {!loadingAgents && agents.length === 0 && !agentError && (
-              <div className="text-center p-4 text-gray-500 text-sm">
-                  No agents found.
+              )}
+            </div>
+              );
+            })}
+          {!loadingSessions && sessions.length === 0 && (
+              <div className="text-center p-8 text-gray-400 text-sm">
+                  <p>No chat history.</p>
+                  <button onClick={handleNewChat} className="text-ri-orange hover:underline mt-2">Start a new chat</button>
               </div>
           )}
+            </>
+          )}
+
         </div>
         
         <div className="p-4 border-t border-gray-100 bg-gray-50 text-xs text-gray-400 text-center">
@@ -727,17 +2171,79 @@ await _chat_wrapper()
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col h-full overflow-hidden relative">
+        <div className="md:hidden bg-white px-4 py-3 border-b border-gray-200 flex items-center space-x-3 shadow-sm z-20">
+             <button
+               className="p-2 -ml-2 text-gray-500 hover:text-gray-700"
+               onClick={() => setIsSidebarOpen(true)}
+             >
+               <FiMenu size={24} />
+             </button>
+             <span className="font-semibold text-gray-700">Model Hub Chat</span>
+             {selectedAgent && (
+                 <span className="text-xs bg-orange-100 text-ri-orange px-2 py-0.5 rounded-full truncate max-w-[120px]">
+                     {selectedAgent.name}
+                 </span>
+             )}
+        </div>
+        
         {selectedAgent ? (
           <>
             {/* Header */}
-            <div className="bg-white px-6 py-3 border-b border-gray-200 flex items-center justify-between shadow-sm z-10">
+            <div className="bg-white px-6 py-3 border-b border-gray-200 flex items-center justify-between shadow-sm z-10 hidden md:flex">
               <div className="flex items-center space-x-3">
-                <div className="p-2 bg-orange-100 rounded-full text-ri-orange">
-                    {selectedAgent.icon ? <img src={selectedAgent.icon} alt="" className="w-5 h-5 object-cover rounded-full" /> : <FiCpu size={20} />}
-                </div>
-                <div>
-                  <h3 className="font-bold text-gray-800">{selectedAgent.name}</h3>
-                  <div className="flex items-center space-x-2">
+                <Menu as="div" className="relative inline-block text-left">
+                    <div>
+                        <MenuButton className="inline-flex justify-center w-full px-4 py-2 text-sm font-medium text-gray-700 bg-white rounded-md hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-opacity-75 items-center space-x-2 border border-gray-200 shadow-sm">
+                            <div className="p-1 bg-orange-100 rounded-full text-ri-orange">
+                                {selectedAgent.icon ? <img src={selectedAgent.icon} alt="" className="w-4 h-4 object-cover rounded-full" /> : <FiCpu size={16} />}
+                            </div>
+                            <span className="font-bold text-gray-800">{selectedAgent.name}</span>
+                            <FiChevronDown
+                                className="w-5 h-5 ml-2 -mr-1 text-gray-400 hover:text-gray-600"
+                                aria-hidden="true"
+                            />
+                        </MenuButton>
+                    </div>
+                    <Transition
+                        as={Fragment}
+                        enter="transition ease-out duration-100"
+                        enterFrom="transform opacity-0 scale-95"
+                        enterTo="transform opacity-100 scale-100"
+                        leave="transition ease-in duration-75"
+                        leaveFrom="transform opacity-100 scale-100"
+                        leaveTo="transform opacity-0 scale-95"
+                    >
+                        <MenuItems className="absolute left-0 w-72 mt-2 origin-top-left bg-white divide-y divide-gray-100 rounded-md shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none z-50 max-h-96 overflow-y-auto">
+                            <div className="px-1 py-1 ">
+                                {agents.map((agent) => (
+                                    <MenuItem key={agent.id}>
+                                        {({ active }) => (
+                                            <button
+                                                onClick={() => setSelectedAgent(agent)}
+                                                className={`${
+                                                    active ? 'bg-orange-50 text-ri-orange' : 'text-gray-900'
+                                                } group flex rounded-md items-center w-full px-2 py-2 text-sm space-x-2`}
+                                            >
+                                                <div className="p-1 bg-gray-100 rounded-full text-gray-500">
+                                                    {agent.icon ? <img src={agent.icon} alt="" className="w-4 h-4 object-cover rounded-full" /> : <FiCpu size={14} />}
+                                                </div>
+                                                <div className="flex flex-col items-start overflow-hidden">
+                                                    <span className="font-medium truncate w-full text-left">{agent.name}</span>
+                                                    <span className="text-xs text-gray-400 truncate w-full text-left">{agent.description}</span>
+                                                </div>
+                                                {selectedAgent.id === agent.id && (
+                                                    <span className="ml-auto text-ri-orange text-xs font-bold">✓</span>
+                                                )}
+                                            </button>
+                                        )}
+                                    </MenuItem>
+                                ))}
+                            </div>
+                        </MenuItems>
+                    </Transition>
+                </Menu>
+                
+                <div className="flex items-center space-x-2 border-l border-gray-200 pl-3">
                     <p className={`text-xs flex items-center ${selectedAgent.status === 'online' ? 'text-green-600' : 'text-red-500'}`}>
                         <span className={`w-1.5 h-1.5 rounded-full mr-1.5 ${selectedAgent.status === 'online' ? 'bg-green-500' : 'bg-red-500'}`} />
                         {' '}
@@ -748,12 +2254,18 @@ await _chat_wrapper()
                             <FiZap size={10} className="mr-1" /> Client Kernel
                         </span>
                     )}
-                  </div>
                 </div>
               </div>
               <div className="flex items-center space-x-2">
                  <button 
-                  onClick={() => setShowLogs(!showLogs)} 
+                  onClick={handleShareSession} 
+                  className={`text-gray-400 hover:text-purple-500 transition-colors p-2 rounded-full hover:bg-purple-50`}
+                  title="Share Session"
+                >
+                  <FiShare2 size={18} />
+                </button>
+                 <button 
+                  onClick={() => setShowLogs(!showLogs)}  
                   className={`text-gray-400 hover:text-blue-500 transition-colors p-2 rounded-full hover:bg-blue-50 ${showLogs ? 'text-blue-500 bg-blue-50' : ''}`}
                   title="Toggle Logs"
                 >
@@ -777,6 +2289,12 @@ await _chat_wrapper()
                 ref={messagesContainerRef}
                 >
                 {messages.map((msg) => (
+                  (() => {
+                    const expandable = isMessageExpandable(msg);
+                    const expanded = expandedMessageIds[msg.id] ?? msg.role === 'assistant';
+                    const hasStoredProgress = Boolean(msg.progressTrace && (msg.progressTrace.summary || msg.progressTrace.details.length > 0));
+                    const progressExpanded = Boolean(expandedProgressMessageIds[msg.id]);
+                    return (
                     <div
                     key={msg.id}
                     className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} group items-end mb-4`}
@@ -805,7 +2323,9 @@ await _chat_wrapper()
                                 <span className="text-xs font-semibold">{selectedAgent.name}</span>
                             </div>
                         )}
-                        <div className={`prose ${msg.role === 'user' ? 'prose-invert' : 'prose-sm'} max-w-none`}>
+                        <div
+                          className={`prose ${msg.role === 'user' ? 'prose-invert' : 'prose-sm'} max-w-none ${expandable && !expanded ? 'max-h-56 overflow-hidden' : ''}`}
+                        >
                         <ReactMarkdown
                             remarkPlugins={[remarkGfm]}
                             components={markdownComponents}
@@ -813,19 +2333,112 @@ await _chat_wrapper()
                             {msg.content}
                         </ReactMarkdown>
                         </div>
+                        {msg.role !== 'user' && (
+                            <div className="mt-2 pt-2 border-t border-gray-100 flex justify-end">
+                                <button
+                                  onClick={() => copyTextWithFeedback(msg.content, `msg-${msg.id}`)}
+                                  className="text-xs text-ri-orange hover:underline inline-flex items-center gap-1"
+                                >
+                                  {copiedKey === `msg-${msg.id}` ? <FiCheck size={12} /> : <FiCopy size={12} />}
+                                  {copiedKey === `msg-${msg.id}` ? 'Copied' : 'Copy output'}
+                                </button>
+                            </div>
+                        )}
+                        {expandable && (
+                            <div className="mt-2 pt-2 border-t border-gray-100 flex justify-end">
+                                <button
+                                  onClick={() => setExpandedMessageIds(prev => ({ ...prev, [msg.id]: !expanded }))}
+                                  className="text-xs text-ri-orange hover:underline"
+                                >
+                                  {expanded ? 'Collapse' : 'Expand full output'}
+                                </button>
+                            </div>
+                        )}
+                        {hasStoredProgress && (
+                            <div className="mt-2 pt-2 border-t border-gray-100">
+                                <button
+                                  onClick={() => setExpandedProgressMessageIds(prev => ({ ...prev, [msg.id]: !progressExpanded }))}
+                                  className="text-xs text-ri-orange hover:underline"
+                                >
+                                  {progressExpanded ? 'Hide generation progress' : 'Show generation progress'}
+                                </button>
+                                {progressExpanded && (
+                                  <div className="mt-2 max-h-40 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-2 space-y-1">
+                                    <div className="flex justify-end mb-1">
+                                      <button
+                                        onClick={() => copyTextWithFeedback([
+                                          msg.progressTrace?.summary || '',
+                                          ...(msg.progressTrace?.details || []),
+                                        ].filter(Boolean).join('\n'), `progress-${msg.id}`)}
+                                        className="text-xs text-ri-orange hover:underline inline-flex items-center gap-1"
+                                      >
+                                        {copiedKey === `progress-${msg.id}` ? <FiCheck size={12} /> : <FiCopy size={12} />}
+                                        {copiedKey === `progress-${msg.id}` ? 'Copied' : 'Copy progress'}
+                                      </button>
+                                    </div>
+                                    {msg.progressTrace?.summary && (
+                                      <div className="text-[11px] text-gray-700 font-medium">
+                                        {msg.progressTrace.summary}
+                                      </div>
+                                    )}
+                                    {(msg.progressTrace?.details || []).map((detail, idx) => (
+                                      <div key={`${msg.id}-progress-${idx}-${detail.slice(0, 24)}`} className="text-[11px] text-gray-600 font-mono break-all">
+                                        {detail}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                            </div>
+                        )}
                         <div className={`text-[10px] mt-2 text-right opacity-60 ${msg.role === 'user' ? 'text-gray-300' : 'text-gray-400'}`}>
                             {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                         </div>
                     </div>
                     </div>
+                    );
+                  })()
                 ))}
-                {isTyping && (
+                {showTypingForCurrentChat && (
                     <div className="flex justify-start">
-                    <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm flex items-center space-x-2">
-                        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
-                        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
-                        <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
-                    </div>
+                      <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm">
+                          <div className="flex items-center space-x-2">
+                              <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                              <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                              <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                              <span className="text-xs text-gray-600">{agentProgress || 'Thinking...'}</span>
+                          </div>
+                          {agentProgressDetails.length > 0 && (
+                            <div className="mt-2">
+                              <div className="flex items-center justify-between gap-2">
+                                <button
+                                  onClick={() => setShowAgentProgressDetails(prev => !prev)}
+                                  className="text-xs text-ri-orange hover:underline"
+                                >
+                                  {showAgentProgressDetails ? 'Hide progress details' : 'Show progress details'}
+                                </button>
+                                <button
+                                  onClick={() => copyTextWithFeedback([
+                                    agentProgress || '',
+                                    ...agentProgressDetails,
+                                  ].filter(Boolean).join('\n'), 'live-progress')}
+                                  className="text-xs text-ri-orange hover:underline inline-flex items-center gap-1"
+                                >
+                                  {copiedKey === 'live-progress' ? <FiCheck size={12} /> : <FiCopy size={12} />}
+                                  {copiedKey === 'live-progress' ? 'Copied' : 'Copy progress'}
+                                </button>
+                              </div>
+                              {showAgentProgressDetails && (
+                                <div className="mt-2 max-h-32 overflow-y-auto rounded border border-gray-100 bg-gray-50 p-2 space-y-1">
+                                  {agentProgressDetails.map((detail, idx) => (
+                                    <div key={`${idx}-${detail.slice(0, 24)}`} className="text-[11px] text-gray-600 font-mono break-all">
+                                      {detail}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                      </div>
                     </div>
                 )}
                 </div>
@@ -833,11 +2446,24 @@ await _chat_wrapper()
                 {/* Kernel Logs Panel */}
                 {showLogs && (
                     <div className="w-80 bg-gray-900 text-white font-mono text-xs overflow-y-auto p-2 border-l border-gray-700 shadow-xl opacity-95">
-                        <div className="font-bold border-b border-gray-700 pb-2 mb-2 text-gray-400 flex justify-between">
+                        <div className="font-bold border-b border-gray-700 pb-2 mb-2 text-gray-400 flex items-center justify-between gap-2">
                             <span>KERNEL LOGS</span>
-                            <span className={kernelStatus === 'busy' ? 'text-green-400' : 'text-gray-500'}>
-                                {kernelStatus.toUpperCase()}
-                            </span>
+                            <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => copyTextWithFeedback(
+                                    kernelExecutionLog.map(log => `[${log.type}]${log.short_content || log.content}`).join('\n'),
+                                    'kernel-logs'
+                                  )}
+                                  className="text-[11px] text-gray-300 hover:text-white inline-flex items-center gap-1"
+                                  title="Copy kernel output"
+                                >
+                                  {copiedKey === 'kernel-logs' ? <FiCheck size={11} /> : <FiCopy size={11} />}
+                                  {copiedKey === 'kernel-logs' ? 'Copied' : 'Copy'}
+                                </button>
+                                <span className={kernelStatus === 'busy' ? 'text-green-400' : 'text-gray-500'}>
+                                    {kernelStatus.toUpperCase()}
+                                </span>
+                            </div>
                         </div>
                         {kernelExecutionLog.map((log, idx) => (
                             <div key={idx} className={`mb-1 break-all ${log.type === 'stderr' ? 'text-red-400' : log.type === 'error' ? 'text-red-500 font-bold' : 'text-gray-300'}`}>
@@ -863,6 +2489,7 @@ await _chat_wrapper()
 
               <div className={`max-w-4xl mx-auto relative flex items-end bg-white border border-gray-300 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-ri-orange focus-within:border-transparent transition-all ${(!isKernelReady || !agentReady) ? 'opacity-60 bg-gray-50' : ''}`}>
                 <textarea
+                  ref={inputRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyPress}
@@ -874,7 +2501,7 @@ await _chat_wrapper()
                         ? "Loading Agent Resources..." 
                         : "Type a message..."
                   }
-                  className="flex-1 max-h-40 min-h-[50px] w-full bg-transparent border-0 focus:ring-0 p-3 resize-none text-gray-800 placeholder-gray-400 disabled:cursor-not-allowed"
+                  className="flex-1 max-h-40 min-h-[50px] w-full bg-transparent border-0 focus:ring-0 focus:outline-none focus-visible:outline-none p-3 resize-none text-gray-800 placeholder-gray-400 disabled:cursor-not-allowed"
                   rows={1}
                 />
                 
@@ -918,7 +2545,74 @@ await _chat_wrapper()
           </div>
         )}
       </div>
+      <Transition appear show={isShareModalOpen} as={Fragment}>
+        <Dialog as="div" className="relative z-50" onClose={() => setIsShareModalOpen(false)}>
+          <TransitionChild
+            as={Fragment}
+            enter="ease-out duration-300"
+            enterFrom="opacity-0"
+            enterTo="opacity-100"
+            leave="ease-in duration-200"
+            leaveFrom="opacity-100"
+            leaveTo="opacity-0"
+          >
+            <div className="fixed inset-0 bg-black bg-opacity-25" />
+          </TransitionChild>
+
+          <div className="fixed inset-0 overflow-y-auto">
+            <div className="flex min-h-full items-center justify-center p-4 text-center">
+              <TransitionChild
+                as={Fragment}
+                enter="ease-out duration-300"
+                enterFrom="opacity-0 scale-95"
+                enterTo="opacity-100 scale-100"
+                leave="ease-in duration-200"
+                leaveFrom="opacity-100 scale-100"
+                leaveTo="opacity-0 scale-95"
+              >
+                <DialogPanel className="w-full max-w-md transform overflow-hidden rounded-2xl bg-white p-6 text-left align-middle shadow-xl transition-all">
+                  <DialogTitle
+                    as="h3"
+                    className="text-lg font-medium leading-6 text-gray-900 flex items-center"
+                  >
+                    <FiShare2 className="mr-2 text-purple-500" /> Share Session
+                  </DialogTitle>
+                  <div className="mt-2">
+                    <p className="text-sm text-gray-500">
+                      Anyone with this link can view the chat history. To share future updates, you'll need to share the link again (or set public visibility permanently).
+                    </p>
+                    <div className="mt-4 flex items-center space-x-2">
+                        <div className="flex-1 bg-gray-100 p-2 rounded text-sm text-gray-600 truncate border border-gray-200">
+                            {shareUrl}
+                        </div>
+                        <button
+                            onClick={copyToClipboard}
+                            className={`p-2 rounded-md text-white transition-colors ${hasCopied ? 'bg-green-500' : 'bg-purple-500 hover:bg-purple-600'}`}
+                            title="Copy Link"
+                        >
+                            {hasCopied ? <FiCheck size={16} /> : <FiCopy size={16} />}
+                        </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-6 flex justify-end">
+                    <button
+                      type="button"
+                      className="inline-flex justify-center rounded-md border border-transparent bg-purple-100 px-4 py-2 text-sm font-medium text-purple-900 hover:bg-purple-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-purple-500 focus-visible:ring-offset-2"
+                      onClick={() => setIsShareModalOpen(false)}
+                    >
+                      Close
+                    </button>
+                  </div>
+                </DialogPanel>
+              </TransitionChild>
+            </div>
+          </div>
+        </Dialog>
+      </Transition>
     </div>
+      );
+    })()
   );
 };
 
