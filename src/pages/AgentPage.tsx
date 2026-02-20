@@ -37,7 +37,7 @@ const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
 const MAX_CHAT_PROXY_APP_ID_LENGTH = 63;
 const CHAT_PROXY_REQUEST_TIMEOUT_MS = 120_000;
 const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 15_000;
-const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 45_000;
+const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 60_000;
 
 const slugifyBranchName = (branchName: string): string => {
   const normalized = branchName
@@ -1319,16 +1319,19 @@ print("DEBUG: hypha_chat_proxy bridge ready")
              return false;
            };
 
-           const resolveChatProxyService = async (forceRefresh: boolean = false) => {
+           const resolveChatProxyService = async (forceRefresh: boolean = false, preferAlternateService: boolean = false) => {
              if (!forceRefresh && cachedChatProxyService && cachedChatProxyServiceId) {
                return cachedChatProxyService;
              }
 
              let lastError: Error | null = null;
-             const prioritizedServiceIds = uniqueNonEmptyValues([
+             const preferredServiceIds = uniqueNonEmptyValues([
                activeChatProxyServiceIdRef.current,
                ...CHAT_PROXY_SERVICE_IDS,
              ]);
+             const prioritizedServiceIds = preferAlternateService && preferredServiceIds.length > 1
+               ? [...preferredServiceIds.slice(1), preferredServiceIds[0]]
+               : preferredServiceIds;
              for (let attempt = 1; attempt <= 3; attempt += 1) {
                for (const serviceId of prioritizedServiceIds) {
                  try {
@@ -1379,19 +1382,20 @@ print("DEBUG: hypha_chat_proxy bridge ready")
 
            let result: any = null;
            let completionError: Error | null = null;
-           for (let attempt = 1; attempt <= 2; attempt += 1) {
+           for (let attempt = 1; attempt <= 3; attempt += 1) {
              try {
+               const preferAlternateService = attempt > 1;
                const proxyForAttempt: any = attempt === 1
                  ? proxy
-                 : await resolveChatProxyService(true);
+                 : await resolveChatProxyService(true, preferAlternateService);
                result = await withTimeout(
                  proxyForAttempt.chat_completion(args.messages, args.tools, args.tool_choice, args.model),
                  CHAT_PROXY_COMPLETION_TIMEOUT_MS,
                  `chat_completion response attempt ${attempt} from ${(globalThis as any).__chatProxyServiceId || CHAT_PROXY_SERVICE_ID}`
                );
 
-               if (isTimeoutPayload(result) && attempt < 2) {
-                 completionError = new Error('Request timed out from chat proxy; retrying once.');
+               if (isTimeoutPayload(result) && attempt < 3) {
+                 completionError = new Error('Request timed out from chat proxy; retrying with alternate service if available.');
                  await new Promise(resolve => setTimeout(resolve, 350));
                  continue;
                }
@@ -1400,7 +1404,12 @@ print("DEBUG: hypha_chat_proxy bridge ready")
                break;
              } catch (attemptError: any) {
                completionError = attemptError instanceof Error ? attemptError : new Error(String(attemptError));
-               if (attempt < 2) {
+               const isTimeoutError = /timed out|timeout/i.test(completionError.message || '');
+               if (attempt < 3 && isTimeoutError) {
+                 await new Promise(resolve => setTimeout(resolve, 350));
+                 continue;
+               }
+               if (attempt < 3 && !isTimeoutError) {
                  await new Promise(resolve => setTimeout(resolve, 350));
                  continue;
                }
