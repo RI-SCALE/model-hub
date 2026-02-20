@@ -730,7 +730,6 @@ const AgentPage: React.FC = () => {
         // Update visibility to public
         await am.edit({
           artifact_id: currentSessionId,
-          visibility: "public",
           config: {
             permissions: {
               "*": "r",
