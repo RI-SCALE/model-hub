@@ -153,6 +153,7 @@ const AgentPage: React.FC = () => {
   const [agentSystemPrompt, setAgentSystemPrompt] = useState<string | null>(null);
   const [agentWelcomeMessage, setAgentWelcomeMessage] = useState<string | null>(null);
   const [isWelcomeMessageLoading, setIsWelcomeMessageLoading] = useState(false);
+  const [hasAttemptedWelcomeMessageLoad, setHasAttemptedWelcomeMessageLoad] = useState(false);
   const [agentChatModel, setAgentChatModel] = useState<string>(DEFAULT_CHAT_MODEL);
 
   const defaultAgentId = 'hypha-agents/grammatical-deduction-bury-enormously';
@@ -209,8 +210,12 @@ const AgentPage: React.FC = () => {
       if (isWelcomeMessageLoading) {
         return [];
       }
-      const welcomeText = (agentWelcomeMessage && agentWelcomeMessage.trim())
-        ? agentWelcomeMessage
+      const hasAgentWelcome = Boolean(agentWelcomeMessage && agentWelcomeMessage.trim());
+      if (!hasAgentWelcome && !hasAttemptedWelcomeMessageLoad) {
+        return [];
+      }
+      const welcomeText = hasAgentWelcome
+        ? agentWelcomeMessage!
         : `Hello! I'm ${selectedAgent?.name || 'your assistant'}, how may I help you today?`;
       return [{
         id: `welcome-${Date.now()}`,
@@ -793,7 +798,7 @@ const AgentPage: React.FC = () => {
           }
           setMessages(getWelcomeMessages());
       }
-    }, [workspace, sessionFromRoute, extraPath, server, navigate, isLoggedIn, agentWelcomeMessage, isWelcomeMessageLoading]);
+    }, [workspace, sessionFromRoute, extraPath, server, navigate, isLoggedIn, agentWelcomeMessage, isWelcomeMessageLoading, hasAttemptedWelcomeMessageLoad]);
 
   // Load and start agent when selected (Keep existing logic but wrap)
   useEffect(() => {
@@ -802,12 +807,14 @@ const AgentPage: React.FC = () => {
       if (!selectedAgent || !isKernelReady || !executeCode || !server) {
           setAgentReady(false);
           setIsWelcomeMessageLoading(false);
+          setHasAttemptedWelcomeMessageLoad(false);
           return;
       }
       
       // Start loading
       setAgentReady(false);
       setIsWelcomeMessageLoading(true);
+      setHasAttemptedWelcomeMessageLoad(false);
       setAgentWelcomeMessage(null);
 
       try {
@@ -1014,6 +1021,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
           : null;
         setAgentWelcomeMessage(welcomeText);
         setIsWelcomeMessageLoading(false);
+        setHasAttemptedWelcomeMessageLoad(true);
         setAgentChatModel(DEFAULT_CHAT_MODEL);
 
         // 3. Get startup script for kernel execution
@@ -1140,6 +1148,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
       } catch (err: any) {
         setAgentReady(false);
         setIsWelcomeMessageLoading(false);
+        setHasAttemptedWelcomeMessageLoad(true);
         console.error("Error loading agent:", err);
         const errorMsg = {
             id: Date.now().toString(),
@@ -1187,7 +1196,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     if (welcome.length > 0) {
       setMessages(welcome);
     }
-  }, [currentSessionId, sessionFromRoute, agentWelcomeMessage, isWelcomeMessageLoading, messages.length]);
+  }, [currentSessionId, sessionFromRoute, agentWelcomeMessage, isWelcomeMessageLoading, hasAttemptedWelcomeMessageLoad, messages.length]);
 
   // Expose proxy wrapper to Python environment
   useEffect(() => {
