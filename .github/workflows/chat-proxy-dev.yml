@@ -94,4 +94,4 @@ jobs:
       - name: Agent chat e2e against dev app
         env:
           REACT_APP_CHAT_PROXY_APP_ID: ${{ steps.ids.outputs.app_id }}
-        run: pnpm playwright test e2e/agent-chat-timeout.spec.ts e2e/agent-chat-resilience.spec.ts --reporter=line
+        run: pnpm playwright test e2e/agent-chat-timeout.spec.ts e2e/agent-chat-resilience.spec.ts e2e/kernel-randomuuid-compat.spec.ts --reporter=line
