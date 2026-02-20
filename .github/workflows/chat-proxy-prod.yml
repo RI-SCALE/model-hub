@@ -35,6 +35,7 @@ jobs:
           python -m pip install pyyaml
           git clone --depth 1 https://github.com/oeway/hypha-apps-cli ../hypha-apps-cli
           python -m pip install -r ../hypha-apps-cli/requirements.txt
+          echo "HYPHA_APPS_CLI_MAIN=${GITHUB_WORKSPACE}/../hypha-apps-cli/hypha_apps_cli/__main__.py" >> $GITHUB_ENV
 
       - name: Deploy production app
         id: deploy_prod
@@ -79,7 +80,7 @@ jobs:
       - name: Cleanup merged branch dev apps
         if: github.event_name == 'pull_request'
         run: |
-          python -m hypha_apps_cli stop-all-instances --app-id "${{ steps.merged_ids.outputs.app_id }}" || true
-          python -m hypha_apps_cli uninstall --app-id "${{ steps.merged_ids.outputs.app_id }}" || true
-          python -m hypha_apps_cli stop-all-instances --app-id "${{ steps.merged_ids.outputs.dummy_app_id }}" || true
-          python -m hypha_apps_cli uninstall --app-id "${{ steps.merged_ids.outputs.dummy_app_id }}" || true
+          python "$HYPHA_APPS_CLI_MAIN" stop-all-instances --app-id "${{ steps.merged_ids.outputs.app_id }}" || true
+          python "$HYPHA_APPS_CLI_MAIN" uninstall --app-id "${{ steps.merged_ids.outputs.app_id }}" || true
+          python "$HYPHA_APPS_CLI_MAIN" stop-all-instances --app-id "${{ steps.merged_ids.outputs.dummy_app_id }}" || true
+          python "$HYPHA_APPS_CLI_MAIN" uninstall --app-id "${{ steps.merged_ids.outputs.dummy_app_id }}" || true
