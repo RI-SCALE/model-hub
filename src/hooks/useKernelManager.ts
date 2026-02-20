@@ -49,6 +49,37 @@ type KernelEvent =
 type LogEntryHandler = (entry: LogEntryInput) => void;
 type ProcessBufferHandler = (bufferRef: React.MutableRefObject<string>, type: 'stdout' | 'stderr', callbacks?: ExecuteCodeCallbacks) => void;
 
+const createFallbackUuid = (): string => {
+  const now = Date.now().toString(16);
+  const randomChunk = () => Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, '0');
+  return `${now}-${randomChunk()}-${randomChunk()}-${randomChunk()}`;
+};
+
+const ensureRandomUuidAvailable = (): (() => string) => {
+  const cryptoObj = globalThis.crypto as (Crypto & { randomUUID?: () => string }) | undefined;
+  if (cryptoObj && typeof cryptoObj.randomUUID === 'function') {
+    return () => cryptoObj.randomUUID!();
+  }
+
+  if (cryptoObj) {
+    try {
+      Object.defineProperty(cryptoObj, 'randomUUID', {
+        configurable: true,
+        writable: true,
+        value: () => createFallbackUuid(),
+      });
+    } catch {
+      // Fall through to closure fallback
+    }
+
+    if (typeof cryptoObj.randomUUID === 'function') {
+      return () => cryptoObj.randomUUID!();
+    }
+  }
+
+  return () => createFallbackUuid();
+};
+
 // Helper to handle test interception for mounting
 const handleTestIntercept = async (
   manager: unknown,
@@ -352,6 +383,7 @@ export const useKernelManager = ({ clearRunningState, onKernelReady, autoStart =
     }
 
     try {
+      ensureRandomUuidAvailable();
       // Create kernel manager with local worker URL
       const workerUrl = `/kernel.worker.js`;
 
@@ -481,9 +513,11 @@ export const useKernelManager = ({ clearRunningState, onKernelReady, autoStart =
 
       // Load the kernel module
       const { manager, KernelMode, KernelLanguage, KernelEvents } = await loadWebPythonKernel();
+      const nextKernelId = `kernel-${ensureRandomUuidAvailable()()}`;
       
       // Create a new kernel
       const kernelId = await manager.createKernel({
+        id: nextKernelId,
         mode: KernelMode.WORKER,
         language: KernelLanguage.PYTHON,
         autoSyncFs: true,
@@ -620,7 +654,9 @@ export const useKernelManager = ({ clearRunningState, onKernelReady, autoStart =
       }
 
       // Create a new kernel
+      const restartKernelId = `kernel-${ensureRandomUuidAvailable()()}`;
       const newKernelId = await manager.createKernel({
+        id: restartKernelId,
         mode: KernelMode.WORKER,
         language: KernelLanguage.PYTHON,
         autoSyncFs: true,
