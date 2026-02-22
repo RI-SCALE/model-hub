@@ -30,16 +30,42 @@ interface SessionInputDraftCache {
 
 const MAX_COLLAPSED_MESSAGE_CHARS = 1200;
 const MAX_COLLAPSED_MESSAGE_LINES = 16;
+const MAX_PROGRESS_TRACE_DETAILS = 30;
 const INPUT_DRAFT_CACHE_KEY = 'ri-scale-agent-input-drafts-v1';
-const GPT5_NANO_CHAT_MODEL = 'gpt-5-nano-2025-08-07';
-const GPT41_NANO_CHAT_MODEL = 'gpt-4.1-nano-2025-04-14';
-const DEFAULT_CHAT_MODEL = GPT41_NANO_CHAT_MODEL;
+const GPT5_NANO_CHAT_MODEL = 'gpt-5-nano';
+const GPT5_MINI_CHAT_MODEL = 'gpt-5-mini';
+const GPT5_CHAT_MODEL = 'gpt-5';
+const GPT52_CHAT_MODEL = 'gpt-5.2';
+const GPT41_NANO_CHAT_MODEL = 'gpt-4.1-nano';
+const GPT41_MINI_CHAT_MODEL = 'gpt-4.1-mini';
+const GPT41_CHAT_MODEL = 'gpt-4.1';
+const O4_MINI_CHAT_MODEL = 'o4-mini';
+const O3_MINI_CHAT_MODEL = 'o3-mini';
+const O3_CHAT_MODEL = 'o3';
+const GPT4O_MINI_CHAT_MODEL = 'gpt-4o-mini';
+const DEFAULT_CHAT_MODEL = GPT5_MINI_CHAT_MODEL;
+
+const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: GPT5_NANO_CHAT_MODEL, label: 'GPT-5 nano' },
+  { value: GPT5_MINI_CHAT_MODEL, label: 'GPT-5 mini' },
+  { value: GPT5_CHAT_MODEL, label: 'GPT-5' },
+  { value: GPT52_CHAT_MODEL, label: 'GPT-5.2' },
+  { value: GPT41_NANO_CHAT_MODEL, label: 'GPT-4.1 nano' },
+  { value: GPT41_MINI_CHAT_MODEL, label: 'GPT-4.1 mini' },
+  { value: GPT41_CHAT_MODEL, label: 'GPT-4.1' },
+  { value: O4_MINI_CHAT_MODEL, label: 'o4-mini' },
+  { value: O3_MINI_CHAT_MODEL, label: 'o3-mini' },
+  { value: O3_CHAT_MODEL, label: 'o3' },
+  { value: GPT4O_MINI_CHAT_MODEL, label: 'GPT-4o mini' },
+];
+
+const CHAT_MODEL_IDS = new Set(CHAT_MODEL_OPTIONS.map(option => option.value));
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
 const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
 const MAX_CHAT_PROXY_APP_ID_LENGTH = 63;
-const CHAT_PROXY_REQUEST_TIMEOUT_MS = 120_000;
+const CHAT_PROXY_REQUEST_TIMEOUT_MS = 300_000;
 const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 15_000;
-const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 60_000;
+const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 300_000;
 
 const slugifyBranchName = (branchName: string): string => {
   const normalized = branchName
@@ -108,8 +134,18 @@ const CHAT_PROXY_SERVICE_ID = CHAT_PROXY_SERVICE_IDS[0] || `ri-scale/default@${D
 const normalizeRequestedChatModel = (candidate: unknown): string | null => {
   const value = typeof candidate === 'string' ? candidate.trim() : '';
   if (!value) return null;
-  if (value.startsWith('gpt-5')) return GPT5_NANO_CHAT_MODEL;
-  if (value.startsWith('gpt-4.1')) return GPT41_NANO_CHAT_MODEL;
+  if (CHAT_MODEL_IDS.has(value)) return value;
+  if (value.startsWith('gpt-5.2')) return GPT52_CHAT_MODEL;
+  if (value.startsWith('gpt-5-mini')) return GPT5_MINI_CHAT_MODEL;
+  if (value.startsWith('gpt-5-nano')) return GPT5_NANO_CHAT_MODEL;
+  if (value.startsWith('gpt-5')) return GPT5_CHAT_MODEL;
+  if (value.startsWith('gpt-4.1-mini')) return GPT41_MINI_CHAT_MODEL;
+  if (value.startsWith('gpt-4.1-nano')) return GPT41_NANO_CHAT_MODEL;
+  if (value.startsWith('gpt-4.1')) return GPT41_CHAT_MODEL;
+  if (value.startsWith('o4-mini')) return O4_MINI_CHAT_MODEL;
+  if (value.startsWith('o3-mini')) return O3_MINI_CHAT_MODEL;
+  if (value.startsWith('o3')) return O3_CHAT_MODEL;
+  if (value.startsWith('gpt-4o-mini')) return GPT4O_MINI_CHAT_MODEL;
   return null;
 };
 
@@ -231,6 +267,8 @@ const AgentPage: React.FC = () => {
   const [hasAttemptedWelcomeMessageLoad, setHasAttemptedWelcomeMessageLoad] = useState(false);
   const [agentChatModel, setAgentChatModel] = useState<string>(DEFAULT_CHAT_MODEL);
   const activeChatProxyServiceIdRef = useRef<string>(CHAT_PROXY_SERVICE_ID);
+  const agentLoadInFlightKeyRef = useRef<string | null>(null);
+  const agentLoadCompletedKeyRef = useRef<string | null>(null);
 
   const defaultAgentId = 'hypha-agents/grammatical-deduction-bury-enormously';
     const LOCAL_DRAFT_SESSION_ID = '__local_draft_session__';
@@ -772,12 +810,36 @@ const AgentPage: React.FC = () => {
     }
   };
 
+  const downloadTextReport = (text: string, prefix: string) => {
+    try {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = `${prefix}-${stamp}.log`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+    } catch (downloadError) {
+      console.error('Failed to download report:', downloadError);
+    }
+  };
+
   // Initialize kernel if not ready
   useEffect(() => {
     if (!isKernelReady && kernelStatus === 'idle') {
       startKernel();
     }
   }, [isKernelReady, kernelStatus, startKernel]);
+
+  useEffect(() => {
+    if (!isKernelReady) {
+      agentLoadInFlightKeyRef.current = null;
+      agentLoadCompletedKeyRef.current = null;
+    }
+  }, [isKernelReady]);
 
   // Fetch agents and sessions
   useEffect(() => {
@@ -877,6 +939,8 @@ const AgentPage: React.FC = () => {
 
   // Load and start agent when selected (Keep existing logic but wrap)
   useEffect(() => {
+    let isCancelled = false;
+
     const loadAgent = async () => {
       // If we don't have what we need, ensure ready state is false
       if (!selectedAgent || !isKernelReady || !executeCode || !server) {
@@ -885,6 +949,12 @@ const AgentPage: React.FC = () => {
           setHasAttemptedWelcomeMessageLoad(false);
           return;
       }
+
+      const agentLoadKey = `${server.config.workspace}::${selectedAgent.id}`;
+      if (agentLoadCompletedKeyRef.current === agentLoadKey || agentLoadInFlightKeyRef.current === agentLoadKey) {
+        return;
+      }
+      agentLoadInFlightKeyRef.current = agentLoadKey;
       
       // Start loading
       setAgentReady(false);
@@ -1033,63 +1103,19 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
     if test_mode == "upstream-error":
       return json.dumps({"error": "simulated-upstream-error"})
 
-    # Prefer the JS-side proxy wrapper first.
-    # Wait for registration and avoid Python websocket fallback (known to be flaky in pyodide).
-    try:
-      msg_count = 0
-      try:
-        msg_count = len(json.loads(messages_json)) if messages_json else 0
-      except Exception:
-        msg_count = -1
-      for _ in range(40):
-        bridge = None
-        bridge_source = None
-        bridge = getattr(js, "__pyodide_chat_proxy_bridge", None)
-        if bridge is not None:
-          bridge_source = "js.__pyodide_chat_proxy_bridge"
-        if hasattr(js, "globalThis"):
-          if bridge is None:
-            bridge = getattr(js.globalThis, "hypha_chat_proxy", None)
-            if bridge is not None:
-              bridge_source = "js.globalThis.hypha_chat_proxy"
-          if bridge is None:
-            bridge = getattr(js.globalThis, "__pyodide_chat_proxy_bridge", None)
-            if bridge is not None:
-              bridge_source = "js.globalThis.__pyodide_chat_proxy_bridge"
-        if bridge is None:
-          bridge = getattr(js, "hypha_chat_proxy", None)
-          if bridge is not None:
-            bridge_source = "js.hypha_chat_proxy"
-        if bridge is None and hasattr(js, "window"):
-          bridge = getattr(js.window, "hypha_chat_proxy", None)
-          if bridge is not None:
-            bridge_source = "js.window.hypha_chat_proxy"
-        if bridge is None and hasattr(js, "window"):
-          bridge = getattr(js.window, "__pyodide_chat_proxy_bridge", None)
-          if bridge is not None:
-            bridge_source = "js.window.__pyodide_chat_proxy_bridge"
-
-        if bridge is not None:
-          print(f"DEBUG: Using JS chat proxy bridge via {bridge_source}; messages={msg_count}; model={model}")
-          js_result = await asyncio.wait_for(
-            bridge(messages_json, tools_json, tool_choice_json, model),
-            timeout=${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}
-          )
-          if isinstance(js_result, str):
-            return js_result
-          return str(js_result)
-        await asyncio.sleep(0.25)
-      print(f"DEBUG: JS proxy wrapper not ready after wait; falling back to Python bridge; messages={msg_count}; model={model}")
-    except asyncio.TimeoutError:
-      return json.dumps({"error": "bridge-timeout: JS proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
-    except BaseException as js_exp:
-      print(f"DEBUG: JS proxy path unavailable, falling back to Python bridge: {js_exp}")
-
     messages = json.loads(messages_json)
     tools = json.loads(tools_json) if tools_json else None
     tool_choice = json.loads(tool_choice_json) if tool_choice_json and tool_choice_json != "auto" else tool_choice_json
 
+    print(f"DEBUG: Python-only proxy path; messages={len(messages)}; model={model}")
+    print(f"TRACE: proxy request messages => {json.dumps(messages, ensure_ascii=False)}")
+    if tools is not None:
+      print(f"TRACE: proxy request tools => {json.dumps(tools, ensure_ascii=False)}")
+    if tool_choice is not None:
+      print(f"TRACE: proxy tool_choice => {json.dumps(tool_choice, ensure_ascii=False)}")
+
     result = await _python_fallback_chat_completion(messages, tools, tool_choice, model)
+    print(f"TRACE: proxy response => {json.dumps(result, ensure_ascii=False)}")
     return json.dumps(result)
   except asyncio.TimeoutError:
     return json.dumps({"error": "bridge-timeout: proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
@@ -1110,10 +1136,12 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         const welcomeText = typeof manifest.welcomeMessage === 'string'
           ? manifest.welcomeMessage
           : null;
-        setAgentWelcomeMessage(welcomeText);
-        setIsWelcomeMessageLoading(false);
-        setHasAttemptedWelcomeMessageLoad(true);
-        setAgentChatModel(resolveAgentChatModel(manifest));
+        if (!isCancelled) {
+          setAgentWelcomeMessage(welcomeText);
+          setIsWelcomeMessageLoading(false);
+          setHasAttemptedWelcomeMessageLoad(true);
+          setAgentChatModel(resolveAgentChatModel(manifest));
+        }
 
         // 3. Get startup script for kernel execution
         const startupScriptRaw = manifest.startup_script;
@@ -1127,106 +1155,12 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         // 4. Run the script
         await executeCode(scriptContent);
 
-        const isBioimageFinderScript =
-          scriptContent.includes('search_datasets') &&
-          scriptContent.includes('search_images');
-
-        if (isBioimageFinderScript) {
-          const bioimageProxyCompatibilityPatch = `
-    import json
-    import js
-    import httpx
-    from urllib.parse import quote
-
-    def _build_biostudies_url(query, limit):
-      encoded = quote(str(query), safe='"()[]{}:*?+-/')
-      bounded_limit = max(1, int(limit))
-      return f"https://www.ebi.ac.uk/biostudies/api/v1/BioImages/search?query={encoded}&page=1&pageSize={bounded_limit}"
-
-    async def _search_biostudies(kind, query, limit):
-      url = _build_biostudies_url(query, limit)
-      async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        payload = response.json()
-
-      hits = payload.get("hits", []) if isinstance(payload, dict) else []
-      bounded_limit = max(1, int(limit))
-      top_hits = hits[:bounded_limit]
-
-      if kind == "images":
-        results = []
-        for item in top_hits:
-          results.append({
-            "id": item.get("id") or item.get("accession") or "",
-            "accession": item.get("accession") or "",
-            "title": item.get("title") or item.get("name") or item.get("accession") or "Untitled image",
-          })
-        return {
-          "query": query,
-          "url": url,
-          "total": payload.get("totalHits", len(hits)),
-          "results": results,
-          "source": "python-biostudies",
-        }
-
-      results = []
-      for item in top_hits:
-        accession = item.get("accession") or item.get("id") or ""
-        results.append({
-          "title": item.get("title") or item.get("name") or accession or "Untitled dataset",
-          "accession": accession,
-          "url": f"https://www.ebi.ac.uk/bioimage-archive/{accession}" if accession else None,
-        })
-      return {
-        "query": query,
-        "url": url,
-        "total": payload.get("totalHits", len(hits)),
-        "results": results,
-        "source": "python-biostudies",
-      }
-
-    async def _ri_scale_proxy_search(kind, query, limit=10):
-      bridge = None
-      bridge = getattr(js, "bioimage_archive_search", None)
-      if bridge is None and hasattr(js, "globalThis"):
-        bridge = getattr(js.globalThis, "bioimage_archive_search", None)
-      if bridge is None and hasattr(js, "window"):
-        bridge = getattr(js.window, "bioimage_archive_search", None)
-
-      if bridge is None:
-        print("DEBUG: bioimage_archive_search bridge missing; using python biostudies")
-        return await _search_biostudies(kind, query, limit)
-
-      try:
-        result = await bridge(kind, query, int(limit))
-        if hasattr(result, "to_py"):
-          result = result.to_py()
-        if isinstance(result, str):
-          result = json.loads(result)
-        if not isinstance(result, dict):
-          raise RuntimeError("Proxy returned unsupported response type")
-        if result.get("error"):
-          raise RuntimeError(str(result["error"]))
-        return result
-      except Exception as proxy_exp:
-        print(f"DEBUG: archive proxy failed for {kind}; using python biostudies: {proxy_exp}")
-        return await _search_biostudies(kind, query, limit)
-
-    async def search_datasets(query: str, limit: int = 10):
-      return await _ri_scale_proxy_search("datasets", query, limit)
-
-    async def search_images(query: str, limit: int = 10):
-      return await _ri_scale_proxy_search("images", query, limit)
-
-    print("DEBUG: BioImage Finder tools routed via stable biostudies search")
-          `;
-          await executeCode(bioimageProxyCompatibilityPatch);
-        }
-
         console.log("Agent startup script executed.");
         
-        setAgentReady(true);
+        if (!isCancelled) {
+          setAgentReady(true);
+        }
+        agentLoadCompletedKeyRef.current = agentLoadKey;
 
         // 5. Connect to the service
         // We'll retry connecting to the service in the chat handler.
@@ -1237,9 +1171,11 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         // We'll retry connecting to the service in the chat handler.
 
       } catch (err: any) {
-        setAgentReady(false);
-        setIsWelcomeMessageLoading(false);
-        setHasAttemptedWelcomeMessageLoad(true);
+        if (!isCancelled) {
+          setAgentReady(false);
+          setIsWelcomeMessageLoading(false);
+          setHasAttemptedWelcomeMessageLoad(true);
+        }
         console.error("Error loading agent:", err);
         const errorMsg = {
             id: Date.now().toString(),
@@ -1247,11 +1183,21 @@ print("DEBUG: hypha_chat_proxy bridge ready")
             content: `**Error loading agent**: ${err.message}`,
             timestamp: new Date()
         };
-        setMessages(prev => [...prev, errorMsg]);
+        if (!isCancelled) {
+          setMessages(prev => [...prev, errorMsg]);
+        }
+      } finally {
+        if (agentLoadInFlightKeyRef.current === agentLoadKey) {
+          agentLoadInFlightKeyRef.current = null;
+        }
       }
     };
 
     loadAgent();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [selectedAgent, isKernelReady, executeCode, server]);
 
   
@@ -1454,154 +1400,12 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         }
       };
       (globalThis as any).__pyodide_chat_proxy_bridge = (globalThis as any).hypha_chat_proxy;
-
-      (globalThis as any).bioimage_archive_search = async (kind: string, query: string, limit: number = 10) => {
-        try {
-          const directArchiveSearch = async (searchKind: 'datasets' | 'images', searchQuery: string, searchLimit: number) => {
-            const fetchJson = async (url: string) => {
-              const controller = new AbortController();
-              const timer = globalThis.setTimeout(() => controller.abort(), 30_000);
-              try {
-                const response = await fetch(url, {
-                  method: 'GET',
-                  headers: { Accept: 'application/json' },
-                  signal: controller.signal,
-                });
-                if (!response.ok) {
-                  throw new Error(`Archive direct fetch failed: ${response.status} ${response.statusText}`);
-                }
-                return await response.json();
-              } finally {
-                globalThis.clearTimeout(timer);
-              }
-            };
-
-            const toDatasetResults = (items: any[]) => items.map((item: any) => {
-              const accession = item?.accession || item?.id || '';
-              return {
-                title: item?.title || item?.name || accession || 'Untitled dataset',
-                accession,
-                url: accession ? `https://www.ebi.ac.uk/bioimage-archive/${accession}` : null,
-              };
-            });
-
-            const encodedQuery = encodeURIComponent(searchQuery);
-            const bioStudiesUrl = `https://www.ebi.ac.uk/biostudies/api/v1/BioImages/search?query=${encodedQuery}&page=1&pageSize=${Math.max(1, Number(searchLimit) || 10)}`;
-            const bioStudiesPayload = await fetchJson(bioStudiesUrl);
-            const bioStudiesHits = Array.isArray(bioStudiesPayload?.hits) ? bioStudiesPayload.hits : [];
-            const bioStudiesSliced = bioStudiesHits.slice(0, Math.max(1, Number(searchLimit) || 10));
-
-            if (searchKind === 'images') {
-              const results = bioStudiesSliced.map((item: any) => ({
-                id: item?.id || item?.accession || '',
-                accession: item?.accession || '',
-                title: item?.title || item?.name || item?.accession || 'Untitled image',
-              }));
-              return {
-                query: searchQuery,
-                url: bioStudiesUrl,
-                total: Number(bioStudiesPayload?.totalHits) || bioStudiesHits.length,
-                results,
-                source: 'biostudies-direct',
-              };
-            }
-
-            return {
-              query: searchQuery,
-              url: bioStudiesUrl,
-              total: Number(bioStudiesPayload?.totalHits) || bioStudiesHits.length,
-              results: toDatasetResults(bioStudiesSliced),
-              source: 'biostudies-direct',
-            };
-          };
-
-          const resolveChatProxyService = async (forceRefresh: boolean = false) => {
-            if (!forceRefresh && cachedChatProxyService) {
-              return cachedChatProxyService;
-            }
-            const prioritizedServiceIds = uniqueNonEmptyValues([
-              activeChatProxyServiceIdRef.current,
-              ...CHAT_PROXY_SERVICE_IDS,
-            ]);
-            let lastResolveError: any = null;
-            for (const serviceId of prioritizedServiceIds) {
-              try {
-                const resolved: any = await server.getService(serviceId, { timeout: 600 });
-                cachedChatProxyService = resolved;
-                cachedChatProxyServiceId = serviceId;
-                activeChatProxyServiceIdRef.current = serviceId;
-                (globalThis as any).__chatProxyServiceId = serviceId;
-                return resolved;
-              } catch (resolveError: any) {
-                lastResolveError = resolveError;
-              }
-            }
-            throw lastResolveError || new Error('Unable to resolve chat proxy service.');
-          };
-
-          let proxy = await resolveChatProxyService();
-          if (!proxy) {
-            throw new Error('Unable to resolve chat proxy service.');
-          }
-          if (kind === 'datasets') {
-            if (typeof proxy.search_datasets !== 'function') {
-              return await directArchiveSearch('datasets', query, limit);
-            }
-            try {
-              const proxyResult = await proxy.search_datasets(query, limit);
-              if (proxyResult && typeof proxyResult === 'object' && 'error' in proxyResult && proxyResult.error) {
-                throw new Error(String(proxyResult.error));
-              }
-              return proxyResult;
-            } catch {
-              try {
-                proxy = await resolveChatProxyService(true);
-                const refreshedResult = await proxy.search_datasets(query, limit);
-                if (refreshedResult && typeof refreshedResult === 'object' && 'error' in refreshedResult && refreshedResult.error) {
-                  throw new Error(String(refreshedResult.error));
-                }
-                return refreshedResult;
-              } catch {
-                return await directArchiveSearch('datasets', query, limit);
-              }
-            }
-          }
-          if (kind === 'images') {
-            if (typeof proxy.search_images !== 'function') {
-              return await directArchiveSearch('images', query, limit);
-            }
-            try {
-              const proxyResult = await proxy.search_images(query, limit);
-              if (proxyResult && typeof proxyResult === 'object' && 'error' in proxyResult && proxyResult.error) {
-                throw new Error(String(proxyResult.error));
-              }
-              return proxyResult;
-            } catch {
-              try {
-                proxy = await resolveChatProxyService(true);
-                const refreshedResult = await proxy.search_images(query, limit);
-                if (refreshedResult && typeof refreshedResult === 'object' && 'error' in refreshedResult && refreshedResult.error) {
-                  throw new Error(String(refreshedResult.error));
-                }
-                return refreshedResult;
-              } catch {
-                return await directArchiveSearch('images', query, limit);
-              }
-            }
-          }
-          throw new Error(`Unsupported search kind: ${kind}`);
-        } catch (e: any) {
-          const errorMsg = e?.message || String(e);
-          return { error: errorMsg };
-        }
-      };
     } else {
         console.log("AgentPage: Server not ready, hypha_chat_proxy not registered.");
         // Clear it if server disconnects to avoid stale calls
       (globalThis as any).__chatProxyServiceId = undefined;
         (globalThis as any).hypha_chat_proxy = undefined;
         (globalThis as any).__pyodide_chat_proxy_bridge = undefined;
-        (globalThis as any).bioimage_archive_search = undefined;
     }
   }, [server]);
 
@@ -1693,7 +1497,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     }
   };
 
-  const handleEditMessage = (msg: Message) => {
+  const handleEditMessage = async (msg: Message) => {
     if (msg.role !== 'user') return;
     
     const index = messages.findIndex(m => m.id === msg.id);
@@ -1706,8 +1510,21 @@ print("DEBUG: hypha_chat_proxy bridge ready")
         }
     }
     
+    const truncatedMessages = messages.slice(0, index);
     setInput(msg.content);
-    setMessages(prev => prev.slice(0, index));
+    setMessages(truncatedMessages);
+
+    const persistedSessionId = currentSessionId;
+    const canPersistEditedThread =
+      Boolean(server) &&
+      Boolean(selectedAgent) &&
+      Boolean(persistedSessionId) &&
+      persistedSessionId !== LOCAL_DRAFT_SESSION_ID &&
+      persistedSessionId!.startsWith(`${server!.config.workspace}/`);
+
+    if (canPersistEditedThread && persistedSessionId && selectedAgent) {
+      await saveSession(persistedSessionId, truncatedMessages, selectedAgent.id);
+    }
   };
 
   const isMessageExpandable = (msg: Message) => {
@@ -1720,11 +1537,11 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     agentProgressRef.current = summary;
     setAgentProgress(summary);
     if (!detail) return;
-    const nextDetails = [...agentProgressDetailsRef.current, detail].slice(-30);
+    const nextDetails = [...agentProgressDetailsRef.current, detail].slice(-MAX_PROGRESS_TRACE_DETAILS);
     agentProgressDetailsRef.current = nextDetails;
     setAgentProgressDetails(prev => {
       const next = [...prev, detail];
-      return next.slice(-30);
+      return next.slice(-MAX_PROGRESS_TRACE_DETAILS);
     });
   };
 
@@ -1899,7 +1716,6 @@ print("DEBUG: hypha_chat_proxy bridge ready")
       
       const historyJsonBase64 = toBase64Utf8(JSON.stringify(history));
       const chatModel = (agentChatModel || DEFAULT_CHAT_MODEL).replaceAll('\\', '\\\\').replaceAll("'", "\\'");
-      const forceToolCallFirstTurn = /\b(find|search|lookup|look up|dataset|datasets|image|images|retrieve|fetch|list)\b/i.test(newMessage.content);
 
         const runChatExecution = async (): Promise<string> => {
           return await new Promise<string>(async (resolve, reject) => {
@@ -1949,60 +1765,91 @@ import base64
 def send_response(data):
     print(f"__RESPONSE_START__:{json.dumps(data)}")
 
+_EXCLUDED_TOOL_NAMES = {
+  'send_response', '_chat_wrapper', '_discover_tools',
+  'exit', 'quit', 'get_ipython', 'open', 'print', 'help',
+  'AsyncOpenAI', 'traceback', 'inspect', 'json', 'js', 'asyncio',
+  'hypha_chat_proxy', 'base64'
+}
+
+def _discover_tools():
+  cached_tool_specs = globals().get('__cached_tool_specs')
+  cached_tool_names = globals().get('__cached_tool_names')
+  available_functions = {}
+
+  if isinstance(cached_tool_specs, list) and isinstance(cached_tool_names, list):
+    for tool_name in cached_tool_names:
+      func = globals().get(tool_name)
+      if func and (inspect.isfunction(func) or inspect.iscoroutinefunction(func)):
+        available_functions[tool_name] = func
+    if len(available_functions) == len(cached_tool_names):
+      return cached_tool_specs, available_functions, True
+
+  tools = []
+  discovered_names = []
+  for name, func in globals().items():
+    is_user_function = (
+      (inspect.isfunction(func) or inspect.iscoroutinefunction(func))
+      and getattr(func, '__module__', None) == '__main__'
+    )
+    if not is_user_function or name.startswith('_') or name in _EXCLUDED_TOOL_NAMES:
+      continue
+
+    doc = inspect.getdoc(func) or "No description provided."
+
+    try:
+      sig = inspect.signature(func)
+    except Exception:
+      continue
+
+    params_schema = {"type": "object", "properties": {}, "required": []}
+    for param_name, param in sig.parameters.items():
+      param_type = "string"
+      if param.annotation != inspect.Parameter.empty:
+        if param.annotation == int:
+          param_type = "integer"
+        elif param.annotation == float:
+          param_type = "number"
+        elif param.annotation == bool:
+          param_type = "boolean"
+
+      params_schema["properties"][param_name] = {"type": param_type}
+      if param.default == inspect.Parameter.empty:
+        params_schema["required"].append(param_name)
+
+    tools.append({
+      "type": "function",
+      "function": {
+        "name": name,
+        "description": doc,
+        "parameters": params_schema
+      }
+    })
+    available_functions[name] = func
+    discovered_names.append(name)
+
+  globals()['__cached_tool_specs'] = tools
+  globals()['__cached_tool_names'] = discovered_names
+  return tools, available_functions, False
+
 async def _chat_wrapper():
     try:
         history_json = base64.b64decode('${historyJsonBase64}').decode('utf-8')
         messages = json.loads(history_json)
         
-        # Discover tools from globals
-        tools = []
-        available_functions = {}
-        
-        for name, func in globals().items():
-            is_user_function = (
-        (inspect.isfunction(func) or inspect.iscoroutinefunction(func))
-        and getattr(func, '__module__', None) == '__main__'
-            )
-            if is_user_function and not name.startswith('_') and name not in ['send_response', '_chat_wrapper', 'exit', 'quit', 'get_ipython', 'open', 'print', 'help', 'AsyncOpenAI', 'traceback', 'inspect', 'json', 'js', 'asyncio', 'hypha_chat_proxy']:
-                doc = inspect.getdoc(func) or "No description provided."
-
-                try:
-                    sig = inspect.signature(func)
-                except Exception:
-                    continue
-
-                params_schema = {"type": "object", "properties": {}, "required": []}
-                
-                for param_name, param in sig.parameters.items():
-                    param_type = "string" 
-                    if param.annotation != inspect.Parameter.empty:
-                        if param.annotation == int: param_type = "integer"
-                        elif param.annotation == float: param_type = "number"
-                        elif param.annotation == bool: param_type = "boolean"
-                        
-                    params_schema["properties"][param_name] = {"type": param_type}
-                    if param.default == inspect.Parameter.empty:
-                        params_schema["required"].append(param_name)
-                        
-                tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": name,
-                        "description": doc,
-                        "parameters": params_schema
-                    }
-                })
-                available_functions[name] = func
-        
+        # Discover tools from globals once and cache in kernel scope
+        tools, available_functions, reused_cached_tools = _discover_tools()
         if tools:
-          print(f"Discovered {len(tools)} tools: {[t['function']['name'] for t in tools]}")
+          if reused_cached_tools:
+            print(f"Reusing cached tools: {[t['function']['name'] for t in tools]}")
+          else:
+            print(f"Discovered {len(tools)} tools: {[t['function']['name'] for t in tools]}")
         
         # Prepare arguments for hypha_chat_proxy
         # It expects JSON strings
         messages_json = json.dumps(messages)
         tools_json = json.dumps(tools) if tools else None
-        force_tool_call_first_turn = ${forceToolCallFirstTurn ? 'True' : 'False'}
-        tool_choice_json = json.dumps("required") if tools and force_tool_call_first_turn else (json.dumps("auto") if tools else None)
+        tool_choice_json = json.dumps("auto") if tools else None
         
         print("DEBUG: Calling hypha_chat_proxy internal function...")
         # Route through JS wrapper via Python bridge
@@ -2029,8 +1876,10 @@ async def _chat_wrapper():
         tool_calls = response_message.get('tool_calls')
         content = response_message.get('content')
         
-        max_turns = 6
+        max_turns = 4
         turns = 0
+        tool_result_cache = {}
+        service_unavailable_tool_errors = 0
 
         while True:
           tool_calls = response_message.get('tool_calls')
@@ -2049,6 +1898,7 @@ async def _chat_wrapper():
           for tool_call in tool_calls:
             function_name = tool_call['function']['name']
             args_content = tool_call['function']['arguments']
+
             try:
               if isinstance(args_content, str):
                 function_args = json.loads(args_content)
@@ -2069,23 +1919,36 @@ async def _chat_wrapper():
             if function_to_call:
               print(f"Calling tool: {function_name}({function_args})")
               try:
-                if inspect.iscoroutinefunction(function_to_call):
-                  function_response = await function_to_call(**function_args)
+                cache_key = f"{function_name}:{json.dumps(function_args, sort_keys=True, ensure_ascii=False)}"
+                if cache_key in tool_result_cache:
+                  function_response = tool_result_cache[cache_key]
+                  print(f"Using cached tool result: {function_name}")
                 else:
-                  function_response = function_to_call(**function_args)
+                  if inspect.iscoroutinefunction(function_to_call):
+                    function_response = await function_to_call(**function_args)
+                  else:
+                    function_response = function_to_call(**function_args)
+                  tool_result_cache[cache_key] = function_response
+
+                function_response_text = str(function_response)
+                if function_name in ('search_datasets', 'search_images') and '503 Service Unavailable' in function_response_text:
+                  service_unavailable_tool_errors += 1
 
                 messages.append({
                   "tool_call_id": tool_call_id,
                   "role": "tool",
                   "name": function_name,
-                  "content": str(function_response),
+                  "content": function_response_text,
                 })
               except Exception as e:
+                error_text = str(e)
+                if function_name in ('search_datasets', 'search_images') and '503 Service Unavailable' in error_text:
+                  service_unavailable_tool_errors += 1
                 messages.append({
                   "tool_call_id": tool_call_id,
                   "role": "tool",
                   "name": function_name,
-                  "content": f"Error: {str(e)}",
+                  "content": f"Error: {error_text}",
                 })
             else:
               messages.append({
@@ -2094,6 +1957,12 @@ async def _chat_wrapper():
                 "name": function_name,
                 "content": f"Error: Tool '{function_name}' is not available.",
               })
+
+          if service_unavailable_tool_errors >= 2:
+            send_response({
+              "text": "The archive search service is temporarily unavailable (HTTP 503), so I can’t retrieve reliable results right now. Please try again shortly."
+            })
+            return
 
           turns += 1
           next_tools_json = json.dumps(tools) if tools else None
@@ -2188,6 +2057,11 @@ await _chat_wrapper()
             if (!isRetriableError || attempt >= maxExecutionAttempts) {
               break;
             }
+            try {
+              await interruptKernel?.();
+            } catch {
+            }
+            await new Promise(resolve => setTimeout(resolve, 300));
           }
         }
 
@@ -2673,19 +2547,46 @@ await _chat_wrapper()
                 {/* Kernel Logs Panel */}
                 {showLogs && (
                     <div className="w-80 bg-gray-900 text-white font-mono text-xs overflow-y-auto p-2 border-l border-gray-700 shadow-xl opacity-95">
+                        {(() => {
+                          const persistedProgressLines = messages.flatMap((msg) => {
+                            if (!msg.progressTrace || (!msg.progressTrace.summary && msg.progressTrace.details.length === 0)) {
+                              return [] as string[];
+                            }
+                            const header = `[progress][message:${msg.id}]`;
+                            const summaryLine = msg.progressTrace.summary
+                              ? [`${header} summary: ${msg.progressTrace.summary}`]
+                              : [];
+                            const detailLines = msg.progressTrace.details.map((detail) => `${header} ${detail}`);
+                            return [...summaryLine, ...detailLines];
+                          });
+
+                          const liveProgressLines = [
+                            ...(agentProgress ? [`[progress][live] summary: ${agentProgress}`] : []),
+                            ...agentProgressDetails.map((detail) => `[progress][live] ${detail}`),
+                          ];
+
+                          const kernelLogLines = kernelExecutionLog.map((log) => `[${log.type}]${log.content}`);
+                          const combinedCopyLines = [...kernelLogLines, ...persistedProgressLines, ...liveProgressLines];
+
+                          return (
+                            <>
                         <div className="font-bold border-b border-gray-700 pb-2 mb-2 text-gray-400 flex items-center justify-between gap-2">
                             <span>KERNEL LOGS</span>
                             <div className="flex items-center gap-2">
                                 <button
-                                  onClick={() => copyTextWithFeedback(
-                                    kernelExecutionLog.map(log => `[${log.type}]${log.short_content || log.content}`).join('\n'),
-                                    'kernel-logs'
-                                  )}
+                                  onClick={() => copyTextWithFeedback(combinedCopyLines.join('\n'), 'kernel-logs')}
                                   className="text-[11px] text-gray-300 hover:text-white inline-flex items-center gap-1"
                                   title="Copy kernel output"
                                 >
                                   {copiedKey === 'kernel-logs' ? <FiCheck size={11} /> : <FiCopy size={11} />}
                                   {copiedKey === 'kernel-logs' ? 'Copied' : 'Copy'}
+                                </button>
+                                <button
+                                  onClick={() => downloadTextReport(combinedCopyLines.join('\n'), 'kernel-debug-report')}
+                                  className="text-[11px] text-gray-300 hover:text-white"
+                                  title="Download debug report"
+                                >
+                                  Download
                                 </button>
                                 <span className={kernelStatus === 'busy' ? 'text-green-400' : 'text-gray-500'}>
                                     {kernelStatus.toUpperCase()}
@@ -2695,9 +2596,29 @@ await _chat_wrapper()
                         {kernelExecutionLog.map((log, idx) => (
                             <div key={idx} className={`mb-1 break-all ${log.type === 'stderr' ? 'text-red-400' : log.type === 'error' ? 'text-red-500 font-bold' : 'text-gray-300'}`}>
                                 <span className="opacity-50 mr-2">[{log.type}]</span>
-                                {log.short_content || log.content}
+                            {log.content}
                             </div>
                         ))}
+                        {(persistedProgressLines.length > 0 || liveProgressLines.length > 0) && (
+                          <>
+                            <div className="font-bold border-b border-gray-700 pb-2 mt-3 mb-2 text-gray-400">MESSAGE PROGRESS TRACE</div>
+                            {persistedProgressLines.map((line, idx) => (
+                              <div key={`persisted-progress-${idx}`} className="mb-1 break-all text-yellow-200">
+                                <span className="opacity-50 mr-2">[progress]</span>
+                                {line}
+                              </div>
+                            ))}
+                            {liveProgressLines.map((line, idx) => (
+                              <div key={`live-progress-${idx}`} className="mb-1 break-all text-green-200">
+                                <span className="opacity-50 mr-2">[progress]</span>
+                                {line}
+                              </div>
+                            ))}
+                          </>
+                        )}
+                            </>
+                          );
+                        })()}
                     </div>
                 )}
             </div>
@@ -2713,6 +2634,24 @@ await _chat_wrapper()
                       </span>
                   </div>
               )}
+
+              <div className="max-w-4xl mx-auto mb-2 flex items-center justify-between gap-3">
+                <label htmlFor="chat-model-select" className="text-xs text-gray-500">
+                  Model
+                </label>
+                <select
+                  id="chat-model-select"
+                  value={agentChatModel}
+                  onChange={(e) => setAgentChatModel(e.target.value)}
+                  className="text-xs border border-gray-300 rounded-md px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-ri-orange"
+                >
+                  {CHAT_MODEL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
               <div className={`max-w-4xl mx-auto relative flex items-end bg-white border border-gray-300 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-ri-orange focus-within:border-transparent transition-all ${(!isKernelReady || !agentReady) ? 'opacity-60 bg-gray-50' : ''}`}>
                 <textarea

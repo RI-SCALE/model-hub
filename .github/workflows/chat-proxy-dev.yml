@@ -65,16 +65,6 @@ jobs:
             --health-check \
             --model gpt-5-mini
 
-      - name: Verify archive search bridge on dev app
-        run: |
-          python scripts/test_chat_proxy.py \
-            --app-id "${{ steps.ids.outputs.app_id }}" \
-            --model gpt-5-mini \
-            --timeout 120 \
-            --check-search \
-            --search-query "mouse tumor" \
-            --search-limit 5
-
       - name: Setup Node
         uses: actions/setup-node@v4
         with:

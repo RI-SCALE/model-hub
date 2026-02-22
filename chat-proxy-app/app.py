@@ -1,11 +1,8 @@
-import asyncio
 import json
 import logging
 import os
 from typing import Any
-from urllib.parse import quote
 
-import httpx
 from hypha_rpc import api
 from openai import AsyncOpenAI
 
@@ -14,116 +11,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _client: AsyncOpenAI | None = None
-BIOSTUDIES_SEARCH_URL = "https://www.ebi.ac.uk/biostudies/api/v1/BioImages/search"
-
-
-def _build_biostudies_url(query: str, limit: int) -> str:
-    encoded = quote(query, safe='"()[]{}:*?+-/')
-    bounded_limit = max(1, int(limit))
-    return f"{BIOSTUDIES_SEARCH_URL}?query={encoded}&page=1&pageSize={bounded_limit}"
-
-
-async def _fetch_json_with_retries(
-    url: str,
-    *,
-    attempts: int = 3,
-    retry_delay_seconds: float = 1.0,
-) -> dict[str, Any]:
-    last_error: Exception | None = None
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "ri-scale-model-hub-chat-proxy/1.0",
-    }
-    for attempt in range(1, attempts + 1):
-        try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                payload = response.json()
-                if isinstance(payload, dict):
-                    return payload
-                raise RuntimeError("Archive response was not a JSON object")
-        except Exception as exp:
-            last_error = exp
-            logger.warning(
-                "Archive fetch failed for %s (attempt %s/%s): %s",
-                url,
-                attempt,
-                attempts,
-                exp,
-            )
-            if attempt < attempts:
-                await asyncio.sleep(retry_delay_seconds * attempt)
-
-    raise RuntimeError(
-        f"BioImage Archive request failed after {attempts} attempts: {last_error}"
-    )
-
-
-async def search_datasets(
-    query: str,
-    limit: int = 10,
-    context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    url = _build_biostudies_url(query, limit)
-    payload = await _fetch_json_with_retries(url)
-    hits = payload.get("hits", []) if isinstance(payload, dict) else []
-    top_hits: list[dict[str, Any]] = []
-
-    for item in hits[: max(1, int(limit))]:
-        title = (
-            item.get("title") or item.get("name") or item.get("accession") or "Untitled"
-        )
-        accession = item.get("accession") or item.get("id") or ""
-        top_hits.append(
-            {
-                "title": title,
-                "accession": accession,
-                "url": (
-                    f"https://www.ebi.ac.uk/bioimage-archive/{accession}"
-                    if accession
-                    else None
-                ),
-            }
-        )
-
-    return {
-        "query": query,
-        "url": url,
-        "total": payload.get("totalHits", len(hits)),
-        "results": top_hits,
-        "source": "biostudies",
-    }
-
-
-async def search_images(
-    query: str,
-    limit: int = 10,
-    context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    url = _build_biostudies_url(query, limit)
-    payload = await _fetch_json_with_retries(url)
-    hits = payload.get("hits", []) if isinstance(payload, dict) else []
-    top_hits: list[dict[str, Any]] = []
-
-    for item in hits[: max(1, int(limit))]:
-        image_id = item.get("id") or item.get("accession") or ""
-        accession = item.get("accession") or ""
-        top_hits.append(
-            {
-                "id": image_id,
-                "accession": accession,
-                "title": item.get("title") or item.get("name") or accession or image_id,
-            }
-        )
-
-    return {
-        "query": query,
-        "url": url,
-        "total": payload.get("totalHits", len(hits)),
-        "results": top_hits,
-        "source": "biostudies",
-    }
 
 
 async def _resolve_openai_key() -> str | None:
@@ -202,7 +89,5 @@ api.export(
         "config": {"visibility": "public"},
         "setup": setup,
         "chat_completion": chat_completion,
-        "search_datasets": search_datasets,
-        "search_images": search_images,
     }
 )

@@ -91,6 +91,38 @@ If you redeploy, restart the frontend kernel session so the latest bridge code i
 - **No response / PythonError**: restart kernel and re-open agent.
 - **Stale behavior after fixes**: hard-refresh browser to clear old worker state.
 
+### CORS and Archive Search
+
+If an agent tool calls `https://beta.bioimagearchive.org/...` directly from the browser/Pyodide runtime, requests may fail with CORS errors such as:
+
+- `No 'Access-Control-Allow-Origin' header is present on the requested resource`
+- `TypeError: Failed to fetch`
+
+Important notes:
+
+- This is **origin-dependent** (not only localhost).
+- It can still happen on deployed domains unless that origin is explicitly allowed by the target server.
+- For reliability, route archive/network fetches through a backend proxy service where possible.
+
+### Kernel Logs and Debug Report
+
+Agent chat includes a **Kernel Logs** panel for low-level diagnostics.
+
+- Open logs using the terminal/log icon in the chat header.
+- Use **Copy** to copy combined kernel output + progress traces.
+- Use **Download** to export a timestamped debug report file.
+
+These details are intended for debugging and incident reports, while user-facing chat progress remains concise.
+
+### Shared Session Permissions
+
+When a chat session is shared, the session artifact permissions are set to:
+
+- `"*": "r"`
+- `"@": "r+"`
+
+`"*": "r"` includes read/list/get-file style access needed to view shared chat content (such as `messages.json`) without granting write/mutate access.
+
 ---
 
 ## Documentation & Help
