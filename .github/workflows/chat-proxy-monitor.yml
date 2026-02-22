@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  monitor-and-rollback:
+  monitor-and-notify:
     runs-on: ubuntu-latest
     env:
       HYPHA_SERVER_URL: ${{ vars.HYPHA_SERVER_URL }}
@@ -14,6 +14,7 @@ jobs:
       RI_SCALE_TOKEN: ${{ secrets.RI_SCALE_TOKEN }}
       HYPHA_TOKEN: ${{ secrets.RI_SCALE_TOKEN }}
       PROD_APP_ID: chat-proxy
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,23 +46,22 @@ jobs:
             --search-query "mouse tumor" \
             --search-limit 5
 
-      - name: Roll back to previous commit when health fails
-        if: steps.health.outcome == 'failure'
+      - name: Notify Slack when health check fails
+        if: steps.health.outcome == 'failure' && env.SLACK_WEBHOOK_URL != ''
         run: |
-          git checkout HEAD~1 -- chat-proxy-app/app.py chat-proxy-app/manifest.yaml
-          python scripts/deploy_chat_proxy.py \
-            --app-id "$PROD_APP_ID" \
-            --non-fatal-start \
-            --health-check \
-            --model gpt-5-mini
+          RUN_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TEXT=":rotating_light: Chat Proxy health check failed for app '$PROD_APP_ID' in '${{ github.repository }}' (workflow: '${{ github.workflow }}').\nRun: $RUN_URL"
+          curl -sS -X POST "$SLACK_WEBHOOK_URL" \
+            -H 'Content-type: application/json' \
+            --data "{\"text\":\"$TEXT\"}"
 
-      - name: Verify post-rollback health
+      - name: Warn when Slack webhook is missing
+        if: steps.health.outcome == 'failure' && env.SLACK_WEBHOOK_URL == ''
+        run: |
+          echo "Health check failed, but SLACK_WEBHOOK_URL is not configured."
+
+      - name: Fail workflow when health check fails
         if: steps.health.outcome == 'failure'
         run: |
-          python scripts/test_chat_proxy.py \
-            --app-id "$PROD_APP_ID" \
-            --model gpt-5-mini \
-            --timeout 120 \
-            --check-search \
-            --search-query "mouse tumor" \
-            --search-limit 5
+          echo "Chat Proxy production health check failed."
+          exit 1
