@@ -279,6 +279,8 @@ interface DatasetKernelState {
   status: 'idle' | 'busy' | 'starting' | 'error';
 }
 
+const KERNEL_INIT_TIMEOUT_MS = 300_000;
+
 export const useKernelManager = ({ clearRunningState, onKernelReady, autoStart = false }: UseKernelManagerProps) => {
   const [isReady, setIsReady] = useState(false);
   const [kernelStatus, setKernelStatus] = useState<'idle' | 'busy' | 'starting' | 'error'>(autoStart ? 'starting' : 'idle');
@@ -501,12 +503,12 @@ export const useKernelManager = ({ clearRunningState, onKernelReady, autoStart =
     isInitializingRef.current = true;
 
     const initTimeout = setTimeout(() => {
-      console.error('[Web Python Kernel] Initialization timeout after 180 seconds');
+      console.error(`[Web Python Kernel] Initialization timeout after ${Math.floor(KERNEL_INIT_TIMEOUT_MS / 1000)} seconds`);
       setKernelStatus('error');
       setIsReady(false);
       showToast('Kernel initialization timed out. Please try restarting.', 'error');
       isInitializingRef.current = false;
-    }, 180000); // 180 second timeout
+    }, KERNEL_INIT_TIMEOUT_MS);
 
     try {
       setKernelStatus('starting');
