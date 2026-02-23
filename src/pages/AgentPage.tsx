@@ -91,6 +91,20 @@ const makeDevAppId = (branchName: string, prefix: string = DEFAULT_DEV_CHAT_PROX
   return trimmedSlug ? `${prefix}-${trimmedSlug}` : prefix;
 };
 
+const normalizeBranchRefName = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  const knownPrefixes = ['refs/heads/', 'origin/', 'refs/remotes/origin/'];
+  for (const prefix of knownPrefixes) {
+    if (trimmed.startsWith(prefix)) {
+      return trimmed.slice(prefix.length);
+    }
+  }
+
+  return trimmed;
+};
+
 const uniqueNonEmptyValues = (values: Array<string | undefined | null>): string[] => {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -107,24 +121,29 @@ const getChatProxyServiceIds = (): string[] => {
   const isProductionBuild = process.env.NODE_ENV === 'production';
   const configuredAppId = (process.env.REACT_APP_CHAT_PROXY_APP_ID || '').trim();
   if (isProductionBuild) {
-    return [`ri-scale/default@${configuredAppId || PRODUCTION_CHAT_PROXY_APP_ID}`];
+    return [`ri-scale/default@${PRODUCTION_CHAT_PROXY_APP_ID}`];
   }
+
+  const explicitBranchProxyAppId = (process.env.REACT_APP_CHAT_PROXY_BRANCH_APP_ID || '').trim();
 
   const branchNameCandidates = uniqueNonEmptyValues([
     process.env.REACT_APP_CHAT_PROXY_BRANCH,
     process.env.REACT_APP_BRANCH_NAME,
     process.env.REACT_APP_GITHUB_HEAD_REF,
     process.env.REACT_APP_GITHUB_REF_NAME,
+    process.env.REACT_APP_VERCEL_GIT_COMMIT_REF,
+    process.env.REACT_APP_CI_COMMIT_REF_NAME,
+    process.env.REACT_APP_BRANCH,
     process.env.GITHUB_HEAD_REF,
     process.env.GITHUB_REF_NAME,
-  ]);
+  ]).map(normalizeBranchRefName);
 
   const branchAppIds = branchNameCandidates.map((branchName) => makeDevAppId(branchName));
   const appIdCandidates = uniqueNonEmptyValues([
+    explicitBranchProxyAppId,
     configuredAppId,
     ...branchAppIds,
     DEFAULT_DEV_CHAT_PROXY_APP_ID,
-    PRODUCTION_CHAT_PROXY_APP_ID,
   ]);
 
   return appIdCandidates.map((appId) => `ri-scale/default@${appId}`);
