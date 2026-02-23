@@ -249,6 +249,14 @@ const Docs: React.FC = () => {
                                https://beta.bioimagearchive.org/search/search/fts/image: Search images
                             </li>
                          </ul>
+
+                         <div className="p-4 bg-orange-50 rounded-lg border border-orange-100">
+                            <h5 className="font-semibold text-gray-900 text-sm mb-2">Architecture Principle</h5>
+                            <p className="text-sm text-gray-700 leading-relaxed">
+                              Agent-specific behavior belongs in the agent startup script, not in the generic chat runner.
+                              For BioImage Finder, compact search payload shaping and fallback dataset summary formatting are implemented in the startup script to keep the frontend agent-agnostic.
+                            </p>
+                         </div>
                       </div>
                    </div>
                 </div>

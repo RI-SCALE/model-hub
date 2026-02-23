@@ -1,9 +1,8 @@
-import asyncio
 import json
 import logging
 import os
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import urlparse
 
 import httpx
 from hypha_rpc import api
@@ -14,115 +13,35 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _client: AsyncOpenAI | None = None
-BIOSTUDIES_SEARCH_URL = "https://www.ebi.ac.uk/biostudies/api/v1/BioImages/search"
+_DEFAULT_ALLOWED_HOSTS = "beta.bioimagearchive.org,www.ebi.ac.uk"
 
 
-def _build_biostudies_url(query: str, limit: int) -> str:
-    encoded = quote(query, safe='"()[]{}:*?+-/')
-    bounded_limit = max(1, int(limit))
-    return f"{BIOSTUDIES_SEARCH_URL}?query={encoded}&page=1&pageSize={bounded_limit}"
+def _allowed_hosts() -> set[str]:
+    raw_value = os.environ.get("RESOLVE_URL_ALLOWED_HOSTS", _DEFAULT_ALLOWED_HOSTS)
+    hosts = {part.strip().lower() for part in raw_value.split(",") if part.strip()}
+    return hosts
 
 
-async def _fetch_json_with_retries(
-    url: str,
-    *,
-    attempts: int = 3,
-    retry_delay_seconds: float = 1.0,
-) -> dict[str, Any]:
-    last_error: Exception | None = None
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "ri-scale-model-hub-chat-proxy/1.0",
-    }
-    for attempt in range(1, attempts + 1):
-        try:
-            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-                response = await client.get(url, headers=headers)
-                response.raise_for_status()
-                payload = response.json()
-                if isinstance(payload, dict):
-                    return payload
-                raise RuntimeError("Archive response was not a JSON object")
-        except Exception as exp:
-            last_error = exp
-            logger.warning(
-                "Archive fetch failed for %s (attempt %s/%s): %s",
-                url,
-                attempt,
-                attempts,
-                exp,
-            )
-            if attempt < attempts:
-                await asyncio.sleep(retry_delay_seconds * attempt)
-
-    raise RuntimeError(
-        f"BioImage Archive request failed after {attempts} attempts: {last_error}"
-    )
+def _normalize_headers(headers: dict[str, Any] | None) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    if not isinstance(headers, dict):
+        return normalized
+    for key, value in headers.items():
+        if not isinstance(key, str):
+            continue
+        if isinstance(value, str):
+            normalized[key] = value
+        elif value is not None:
+            normalized[key] = str(value)
+    return normalized
 
 
-async def search_datasets(
-    query: str,
-    limit: int = 10,
-    context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    url = _build_biostudies_url(query, limit)
-    payload = await _fetch_json_with_retries(url)
-    hits = payload.get("hits", []) if isinstance(payload, dict) else []
-    top_hits: list[dict[str, Any]] = []
-
-    for item in hits[: max(1, int(limit))]:
-        title = (
-            item.get("title") or item.get("name") or item.get("accession") or "Untitled"
-        )
-        accession = item.get("accession") or item.get("id") or ""
-        top_hits.append(
-            {
-                "title": title,
-                "accession": accession,
-                "url": (
-                    f"https://www.ebi.ac.uk/bioimage-archive/{accession}"
-                    if accession
-                    else None
-                ),
-            }
-        )
-
+def _error_payload(url: str, status_code: int, error: str) -> dict[str, Any]:
     return {
-        "query": query,
-        "url": url,
-        "total": payload.get("totalHits", len(hits)),
-        "results": top_hits,
-        "source": "biostudies",
-    }
-
-
-async def search_images(
-    query: str,
-    limit: int = 10,
-    context: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    url = _build_biostudies_url(query, limit)
-    payload = await _fetch_json_with_retries(url)
-    hits = payload.get("hits", []) if isinstance(payload, dict) else []
-    top_hits: list[dict[str, Any]] = []
-
-    for item in hits[: max(1, int(limit))]:
-        image_id = item.get("id") or item.get("accession") or ""
-        accession = item.get("accession") or ""
-        top_hits.append(
-            {
-                "id": image_id,
-                "accession": accession,
-                "title": item.get("title") or item.get("name") or accession or image_id,
-            }
-        )
-
-    return {
-        "query": query,
-        "url": url,
-        "total": payload.get("totalHits", len(hits)),
-        "results": top_hits,
-        "source": "biostudies",
+        "ok": False,
+        "status_code": int(status_code),
+        "url": str(url),
+        "error": error,
     }
 
 
@@ -168,11 +87,84 @@ async def setup() -> dict[str, Any]:
     return {"ok": True}
 
 
+async def resolve_url(
+    url: str,
+    method: str = "GET",
+    headers: dict[str, Any] | None = None,
+    timeout: float = 30.0,
+    body: str | dict[str, Any] | list[Any] | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    try:
+        parsed = urlparse(str(url))
+    except Exception as exp:
+        return _error_payload(str(url), 400, f"Invalid URL: {exp}")
+
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme.lower() != "https":
+        return _error_payload(str(url), 400, "Only https URLs are allowed")
+
+    if host not in _allowed_hosts():
+        return _error_payload(
+            str(url),
+            403,
+            f"Host '{host}' is not allowed by RESOLVE_URL_ALLOWED_HOSTS",
+        )
+
+    method_value = str(method or "GET").upper()
+    if method_value not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+        return _error_payload(str(url), 400, f"Unsupported method: {method_value}")
+
+    request_headers = _normalize_headers(headers)
+    request_headers.setdefault("User-Agent", "ri-scale-model-hub-chat-proxy/1.0")
+
+    timeout_seconds = max(1.0, float(timeout))
+
+    request_kwargs: dict[str, Any] = {
+        "method": method_value,
+        "url": str(url),
+        "headers": request_headers,
+    }
+    if body is not None:
+        if isinstance(body, (dict, list)):
+            request_kwargs["json"] = body
+        else:
+            request_kwargs["content"] = str(body)
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
+            response = await client.request(**request_kwargs)
+    except Exception as exp:
+        logger.warning("resolve_url failed for %s: %s", url, exp)
+        return _error_payload(str(url), 502, str(exp))
+
+    result: dict[str, Any] = {
+        "ok": 200 <= int(response.status_code) < 300,
+        "status_code": int(response.status_code),
+        "url": str(response.url),
+        "headers": dict(response.headers),
+    }
+
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type.lower():
+        try:
+            result["json"] = response.json()
+        except Exception:
+            result["text"] = response.text
+    else:
+        result["text"] = response.text
+
+    if not result["ok"]:
+        result["error"] = f"Upstream returned HTTP {response.status_code}"
+
+    return result
+
+
 async def chat_completion(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
     tool_choice: dict[str, Any] | str | None = None,
-    model: str = "gpt-4-turbo-preview",
+    model: str = "gpt-5-mini",
     context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     global _client
@@ -202,7 +194,6 @@ api.export(
         "config": {"visibility": "public"},
         "setup": setup,
         "chat_completion": chat_completion,
-        "search_datasets": search_datasets,
-        "search_images": search_images,
+        "resolve_url": resolve_url,
     }
 )

@@ -63,8 +63,11 @@ The RI-SCALE agent stack is intentionally simple:
 Current frontend expects chat-proxy to expose:
 
 - `chat_completion(messages, tools, tool_choice, model)`
+- `resolve_url(url, method='GET', headers=None, timeout=30.0)`
 
 The service must be **publicly visible** for anonymous users.
+
+`resolve_url` is used as a CORS-safe relay for selected agent tool HTTP calls (for example, `beta.bioimagearchive.org`) so browser-origin CORS restrictions do not break tool execution.
 
 ---
 

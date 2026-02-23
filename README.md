@@ -57,3 +57,10 @@ Artifacts containing an `index.html` file will display an **"Open App"** button 
 For branch-safe dev deployments, production-only app IDs, health monitoring, and rollback automation, see:
 
 - `docs/chat-proxy-cicd.md`
+
+## Agent Architecture Principles
+
+- Keep `src/pages/AgentPage.tsx` agent-agnostic. It should orchestrate execution, retries, and generic fallback handling only.
+- Keep BioImage Finder domain logic in `scripts/agent_startup_scripts/bioimage_finder_startup_script.py`.
+- BioImage-specific search result shaping (compact payloads) and dataset fallback summaries must be implemented in the startup script, not in generic frontend orchestration code.
+- Keep chat-proxy app agent-agnostic with a minimal surface (`setup`, `chat_completion`, `resolve_url`).

@@ -4,7 +4,9 @@ import base64
 import json
 import os
 import traceback
+from datetime import datetime, timezone
 
+import httpx
 from hypha_rpc import connect_to_server
 
 
@@ -57,20 +59,25 @@ def parse_args() -> argparse.Namespace:
         default="",
     )
     parser.add_argument(
-        "--check-search",
+        "--check-request-url",
         action="store_true",
-        help="Also verify search_datasets/search_images tool bridge",
+        help="Probe proxy.resolve_url repeatedly through Hypha service",
     )
     parser.add_argument(
-        "--search-query",
-        default="cancer",
-        help="Query used when --check-search is enabled",
+        "--request-url",
+        default="https://beta.bioimagearchive.org/search/search/fts?query=mouse%20OR%20tumor",
+        help="URL to probe when --check-request-url is enabled",
     )
     parser.add_argument(
-        "--search-limit",
+        "--request-attempts",
         type=int,
         default=5,
-        help="Limit used when --check-search is enabled",
+        help="Number of repeated resolve_url probes",
+    )
+    parser.add_argument(
+        "--compare-direct",
+        action="store_true",
+        help="Also perform direct HTTP probes for the same URL",
     )
     return parser.parse_args()
 
@@ -145,52 +152,80 @@ async def run_health_check(args: argparse.Namespace) -> int:
 
         print("✅ chat-proxy health check passed")
 
-        if args.check_search:
-            print("Checking BioImage Archive search bridge...")
-
-            if not hasattr(proxy, "search_datasets"):
-                print("❌ proxy is missing search_datasets")
-                return 1
-            if not hasattr(proxy, "search_images"):
-                print("❌ proxy is missing search_images")
+        if args.check_request_url:
+            if not hasattr(proxy, "resolve_url"):
+                print("❌ proxy is missing resolve_url")
                 return 1
 
-            try:
-                datasets = await asyncio.wait_for(
-                    proxy.search_datasets(args.search_query, int(args.search_limit)),
-                    timeout=float(args.timeout),
-                )
-                images = await asyncio.wait_for(
-                    proxy.search_images(args.search_query, int(args.search_limit)),
-                    timeout=float(args.timeout),
-                )
-            except asyncio.TimeoutError:
-                print(f"❌ search bridge timed out after {args.timeout}s")
-                return 1
-            except Exception as exp:
-                print(f"❌ search bridge call failed: {exp}")
-                traceback.print_exc()
-                return 1
+            print("Probing resolve_url through Hypha app...")
+            proxy_statuses: dict[str, int] = {}
+            for attempt in range(1, max(1, int(args.request_attempts)) + 1):
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                try:
+                    payload = await asyncio.wait_for(
+                        proxy.resolve_url(
+                            url=args.request_url,
+                            method="GET",
+                            headers={"Accept": "application/json"},
+                            timeout=30,
+                        ),
+                        timeout=float(args.timeout),
+                    )
+                except asyncio.TimeoutError:
+                    print(f"{ts} | proxy | attempt={attempt} | timeout")
+                    proxy_statuses["timeout"] = proxy_statuses.get("timeout", 0) + 1
+                    continue
+                except Exception as exp:
+                    print(f"{ts} | proxy | attempt={attempt} | exception={exp}")
+                    proxy_statuses["exception"] = proxy_statuses.get("exception", 0) + 1
+                    continue
 
-            for label, payload in (("datasets", datasets), ("images", images)):
                 if not isinstance(payload, dict):
                     print(
-                        f"❌ {label} search returned non-dict payload: {type(payload)}"
+                        f"{ts} | proxy | attempt={attempt} | unexpected_payload_type={type(payload)}"
                     )
-                    return 1
-                if (
-                    "query" not in payload
-                    or "results" not in payload
-                    or "total" not in payload
-                ):
-                    print(f"❌ {label} search payload missing expected keys")
-                    print(json.dumps(payload, indent=2))
-                    return 1
-                if not isinstance(payload.get("results"), list):
-                    print(f"❌ {label} search results is not a list")
-                    return 1
+                    proxy_statuses["unexpected_payload"] = (
+                        proxy_statuses.get("unexpected_payload", 0) + 1
+                    )
+                    continue
 
-            print("✅ search bridge health check passed")
+                status_code = payload.get("status_code")
+                code_key = str(status_code)
+                proxy_statuses[code_key] = proxy_statuses.get(code_key, 0) + 1
+                error_text = payload.get("error") or ""
+                print(
+                    f"{ts} | proxy | attempt={attempt} | status_code={status_code} | ok={payload.get('ok')} | error={error_text}"
+                )
+
+            print("Proxy resolve_url status summary:")
+            print(json.dumps(proxy_statuses, indent=2, sort_keys=True))
+
+            if args.compare_direct:
+                print("Probing direct endpoint from same client host...")
+                direct_statuses: dict[str, int] = {}
+                for attempt in range(1, max(1, int(args.request_attempts)) + 1):
+                    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                    try:
+                        async with httpx.AsyncClient(
+                            timeout=30.0, follow_redirects=True
+                        ) as client:
+                            response = await client.get(
+                                args.request_url,
+                                headers={"Accept": "application/json"},
+                            )
+                        key = str(response.status_code)
+                        direct_statuses[key] = direct_statuses.get(key, 0) + 1
+                        print(
+                            f"{ts} | direct | attempt={attempt} | status_code={response.status_code}"
+                        )
+                    except Exception as exp:
+                        direct_statuses["exception"] = (
+                            direct_statuses.get("exception", 0) + 1
+                        )
+                        print(f"{ts} | direct | attempt={attempt} | exception={exp}")
+
+                print("Direct request status summary:")
+                print(json.dumps(direct_statuses, indent=2, sort_keys=True))
 
         return 0
     except asyncio.TimeoutError:

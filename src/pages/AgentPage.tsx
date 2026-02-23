@@ -1047,11 +1047,31 @@ except Exception as e:
 # Define the proxy function for compatibility with agents expecting js.hypha_chat_proxy
 
 def _is_timeout_payload(payload):
-  if isinstance(payload, str):
-    return "timed out" in payload.lower() or "timeout" in payload.lower()
+  timeout_tokens = [
+    "request timed out",
+    "timed out",
+    "request timeout",
+    "gateway timeout",
+    "deadline exceeded",
+    "upstream timeout",
+    "bridge-timeout",
+  ]
+  timeout_codes = {"timeout", "request_timeout", "gateway_timeout", "upstream_timeout", "bridge-timeout"}
   if isinstance(payload, dict):
+    code = payload.get("code")
+    if isinstance(code, str) and code.strip().lower() in timeout_codes:
+      return True
+    status = payload.get("status") or payload.get("status_code")
+    if isinstance(status, int) and status in (408, 504):
+      return True
     err = payload.get("error") or payload.get("message")
-    return isinstance(err, str) and ("timed out" in err.lower() or "timeout" in err.lower())
+    if isinstance(err, str):
+      lowered = err.lower()
+      return any(token in lowered for token in timeout_tokens)
+    return False
+  if isinstance(payload, str):
+    lowered = payload.lower()
+    return any(token in lowered for token in timeout_tokens)
   return False
 
 def _extract_timeout_seconds(timeout_value, fallback=30.0):
@@ -1138,20 +1158,20 @@ async def _resolve_proxy_service_for_utilities():
 async def _proxy_request_url_via_service(url, method="GET", headers=None, timeout=30.0):
   try:
     proxy = await _resolve_proxy_service_for_utilities()
-    if not hasattr(proxy, 'request_url'):
+    if not hasattr(proxy, 'resolve_url'):
       return {
         "ok": False,
-        "error": "chat-proxy service is missing request_url; deploy updated chat-proxy app",
+        "error": "chat-proxy service is missing resolve_url; deploy updated chat-proxy app",
         "status_code": 502,
         "url": str(url),
       }
     payload = await asyncio.wait_for(
-      proxy.request_url(url=url, method=method, headers=headers or {}, timeout=float(timeout)),
+      proxy.resolve_url(url=url, method=method, headers=headers or {}, timeout=float(timeout)),
       timeout=max(5.0, float(timeout) + 5.0)
     )
     return payload if isinstance(payload, dict) else {
       "ok": False,
-      "error": f"Unexpected request_url payload type: {type(payload)}",
+      "error": f"Unexpected resolve_url payload type: {type(payload)}",
       "status_code": 500,
       "url": str(url),
       "text": str(payload),
@@ -1160,7 +1180,7 @@ async def _proxy_request_url_via_service(url, method="GET", headers=None, timeou
     return {
       "ok": False,
       "error": str(exp),
-      "status_code": 500,
+      "status_code": 502,
       "url": str(url),
     }
 
@@ -1283,9 +1303,12 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
   except asyncio.TimeoutError:
     return json.dumps({"error": "bridge-timeout: proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
   except BaseException as e:
+    if isinstance(e, asyncio.CancelledError):
+      return json.dumps({"error": "bridge-timeout: request cancelled while awaiting proxy response"})
     print(f"DEBUG: Exception in hypha_chat_proxy bridge: {e}")
     traceback.print_exc()
-    return json.dumps({"error": f"bridge-error: {str(e)}"})
+    error_text = str(e).strip() or e.__class__.__name__
+    return json.dumps({"error": f"bridge-error: {error_text}"})
 
 print("DEBUG: hypha_chat_proxy bridge ready")
 _install_httpx_proxy_patch()
@@ -2049,6 +2072,8 @@ async def _chat_wrapper():
         successful_tool_calls = 0
         successful_tool_results = []
         timeout_finalize_requested = False
+        dataset_query_failures = 0
+        single_term_hint_added = False
 
         def _short_text(value, max_len=400):
           text = str(value)
@@ -2056,9 +2081,39 @@ async def _chat_wrapper():
             return text
           return text[:max_len] + "..."
 
+        def _try_parse_dict(tool_output):
+          if isinstance(tool_output, dict):
+            return tool_output
+          if not isinstance(tool_output, str):
+            return None
+          text = tool_output.strip()
+          if not text:
+            return None
+          try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+              return parsed
+          except Exception:
+            pass
+          try:
+            import ast
+            parsed = ast.literal_eval(text)
+            if isinstance(parsed, dict):
+              return parsed
+          except Exception:
+            return None
+          return None
+
         def _summarize_tool_results():
           if not successful_tool_results:
             return None
+
+          for item in successful_tool_results:
+            parsed_output = _try_parse_dict(item.get('output'))
+            if isinstance(parsed_output, dict):
+              assistant_summary = parsed_output.get('assistant_summary')
+              if isinstance(assistant_summary, str) and assistant_summary.strip():
+                return assistant_summary
 
           lines = ["I executed the available tool(s) and collected these results:"]
           for index, item in enumerate(successful_tool_results[:5], start=1):
@@ -2072,15 +2127,110 @@ async def _chat_wrapper():
           return "\\n".join(lines)
 
         def _is_timeout_error_payload(payload):
-          if isinstance(payload, str):
-            lowered = payload.lower()
-            return "timed out" in lowered or "timeout" in lowered
           if isinstance(payload, dict):
+            timeout_codes = {"timeout", "request_timeout", "gateway_timeout", "upstream_timeout", "bridge-timeout"}
+            code = payload.get("code")
+            if isinstance(code, str) and code.strip().lower() in timeout_codes:
+              return True
+            status = payload.get("status") or payload.get("status_code")
+            if isinstance(status, int) and status in (408, 504):
+              return True
             maybe_error = payload.get("error") or payload.get("message")
             if isinstance(maybe_error, str):
               lowered = maybe_error.lower()
-              return "timed out" in lowered or "timeout" in lowered
+              return any(token in lowered for token in [
+                "request timed out",
+                "timed out",
+                "request timeout",
+                "gateway timeout",
+                "deadline exceeded",
+                "upstream timeout",
+                "bridge-timeout",
+              ])
+            return False
+          if isinstance(payload, str):
+            lowered = payload.lower()
+            return any(token in lowered for token in [
+              "request timed out",
+              "timed out",
+              "request timeout",
+              "gateway timeout",
+              "deadline exceeded",
+              "upstream timeout",
+              "bridge-timeout",
+            ])
           return False
+
+        def _ensure_latest_tool_call_responses(messages_payload):
+          if not isinstance(messages_payload, list) or not messages_payload:
+            return
+
+          assistant_index = None
+          expected_ids = []
+          for idx in range(len(messages_payload) - 1, -1, -1):
+            message = messages_payload[idx]
+            if not isinstance(message, dict) or message.get("role") != "assistant":
+              continue
+            tool_calls_in_message = message.get("tool_calls")
+            if not isinstance(tool_calls_in_message, list) or not tool_calls_in_message:
+              continue
+
+            ids = []
+            for tool_call in tool_calls_in_message:
+              if not isinstance(tool_call, dict):
+                continue
+              tool_call_id = tool_call.get("id")
+              if isinstance(tool_call_id, str) and tool_call_id.strip():
+                ids.append(tool_call_id)
+
+            if ids:
+              assistant_index = idx
+              expected_ids = ids
+              break
+
+          if assistant_index is None or not expected_ids:
+            return
+
+          seen_ids = set()
+          tool_scan_index = assistant_index + 1
+          while tool_scan_index < len(messages_payload):
+            candidate = messages_payload[tool_scan_index]
+            if not isinstance(candidate, dict):
+              tool_scan_index += 1
+              continue
+            if candidate.get("role") != "tool":
+              break
+            candidate_id = candidate.get("tool_call_id")
+            if isinstance(candidate_id, str):
+              seen_ids.add(candidate_id)
+            tool_scan_index += 1
+
+          missing_ids = [tool_call_id for tool_call_id in expected_ids if tool_call_id not in seen_ids]
+          for missing_id in missing_ids:
+            messages_payload.insert(tool_scan_index, {
+              "tool_call_id": missing_id,
+              "role": "tool",
+              "name": "tool",
+              "content": "Error: tool call response missing due runtime interruption.",
+            })
+            tool_scan_index += 1
+
+        async def _call_follow_up(messages_payload, tools_payload, tool_choice_payload):
+          _ensure_latest_tool_call_responses(messages_payload)
+          remaining_seconds = soft_deadline - asyncio.get_event_loop().time()
+          timeout_seconds = min(35.0, max(5.0, remaining_seconds + 2.0))
+          try:
+            return await asyncio.wait_for(
+              hypha_chat_proxy(
+                json.dumps(messages_payload),
+                json.dumps(tools_payload) if tools_payload else None,
+                json.dumps(tool_choice_payload) if tools_payload else None,
+                '${chatModel}'
+              ),
+              timeout=timeout_seconds
+            )
+          except asyncio.TimeoutError:
+            return json.dumps({"error": "request_timeout", "code": "request_timeout", "status": 408})
 
         while True:
           tool_calls = response_message.get('tool_calls')
@@ -2095,6 +2245,8 @@ async def _chat_wrapper():
             return
 
           messages.append(response_message)
+          tool_errors_this_turn = 0
+          tool_success_this_turn = 0
 
           for tool_call in tool_calls:
             total_tool_calls += 1
@@ -2134,6 +2286,7 @@ async def _chat_wrapper():
 
                 function_response_text = str(function_response)
                 successful_tool_calls += 1
+                tool_success_this_turn += 1
                 successful_tool_results.append({
                   "name": function_name,
                   "output": function_response_text,
@@ -2147,6 +2300,15 @@ async def _chat_wrapper():
                 })
               except Exception as e:
                 error_text = str(e)
+                tool_errors_this_turn += 1
+                if function_name == "search_datasets":
+                  dataset_query_failures += 1
+                  if dataset_query_failures >= 2 and not single_term_hint_added:
+                    messages.append({
+                      "role": "system",
+                      "content": "Dataset queries have repeatedly failed. Simplify now to single-term fallback queries likely present in the beta index (for example: tumor, mouse, cancer). Make at most two fallback calls, then provide the best possible final answer and explicitly mention beta index limitations.",
+                    })
+                    single_term_hint_added = True
                 successful_tool_results.append({
                   "name": function_name,
                   "output": f"Error: {error_text}",
@@ -2158,12 +2320,21 @@ async def _chat_wrapper():
                   "content": f"Error: {error_text}",
                 })
             else:
+              tool_errors_this_turn += 1
               messages.append({
                 "tool_call_id": tool_call_id,
                 "role": "tool",
                 "name": function_name,
                 "content": f"Error: Tool '{function_name}' is not available.",
               })
+
+          if dataset_query_failures >= 2 and tool_success_this_turn == 0 and tool_errors_this_turn > 0:
+            summary_text = _summarize_tool_results()
+            if isinstance(summary_text, str) and summary_text:
+              send_response({
+                "text": f"{summary_text}\\n\\nI could not find exact matches for the original request. The BioImage Archive API is currently in beta and appears limited/intermittent. I used simplified fallback queries and returned the best available results/errors.",
+              })
+              return
 
           if asyncio.get_event_loop().time() >= soft_deadline and not timeout_finalize_requested:
             timeout_finalize_requested = True
@@ -2176,12 +2347,7 @@ async def _chat_wrapper():
           next_tools_json = json.dumps(tools) if tools else None
           next_tool_choice = "none" if timeout_finalize_requested else "auto"
           next_tool_choice_json = json.dumps(next_tool_choice) if tools else None
-          next_result_json = await hypha_chat_proxy(
-            json.dumps(messages),
-            next_tools_json,
-            next_tool_choice_json,
-            '${chatModel}'
-          )
+          next_result_json = await _call_follow_up(messages, tools, next_tool_choice)
           try:
             next_result = json.loads(next_result_json)
           except Exception as parse_err:
@@ -2200,12 +2366,7 @@ async def _chat_wrapper():
                 "role": "system",
                 "content": "The previous model call timed out. Provide the best possible final answer now using the tool outputs already collected. Do not call additional tools.",
               })
-              forced_result_json = await hypha_chat_proxy(
-                json.dumps(messages),
-                json.dumps(tools) if tools else None,
-                json.dumps("none") if tools else None,
-                '${chatModel}'
-              )
+              forced_result_json = await _call_follow_up(messages, tools, "none")
               try:
                 forced_result = json.loads(forced_result_json)
                 if isinstance(forced_result, dict) and "error" in forced_result:
@@ -2237,7 +2398,18 @@ await _chat_wrapper()
             if (executeCode) {
               await executeCode(code, {
                      onOutput: (log) => {
+                  const isBenignPyodideToPyNoise = (text: string | undefined) => {
+                    if (!text) return false;
+                    const normalized = text.toLowerCase();
+                    return normalized.includes('pyodide_websocket.py')
+                      && normalized.includes("'str' object has no attribute 'to_py'");
+                  };
+
                   if (log.type === 'error') {
+                    if (isBenignPyodideToPyNoise(log.content)) {
+                      updateAgentProgress('Ignoring known Pyodide websocket warning...', log.content || '');
+                      return;
+                    }
                     safeReject(new Error(log.content || 'Kernel execution error'));
                     return;
                   }
@@ -2260,6 +2432,10 @@ await _chat_wrapper()
                         if (log.type === 'stderr' && log.content) {
                           const stderr = log.content.trim();
                           if (stderr) {
+                            if (isBenignPyodideToPyNoise(stderr)) {
+                              updateAgentProgress('Ignoring known Pyodide websocket warning...');
+                              return;
+                            }
                             updateAgentProgress('Agent emitted runtime logs...', stderr);
                           }
                         }

@@ -16,7 +16,9 @@ def _extract_manifest(payload: Dict[str, Any]) -> Dict[str, Any]:
 async def _run(args: argparse.Namespace) -> None:
     token = args.token
     if not token:
-        raise ValueError("A token is required. Pass --token or set HYPHA_TOKEN in the environment.")
+        raise ValueError(
+            "A token is required. Pass --token or set HYPHA_TOKEN in the environment."
+        )
 
     startup_script_path = Path(args.startup_script).resolve()
     if not startup_script_path.exists():
@@ -57,7 +59,9 @@ async def _run(args: argparse.Namespace) -> None:
         )
 
     if persisted_script != startup_script:
-        raise RuntimeError("Verification failed: persisted startup_script content does not match source file.")
+        raise RuntimeError(
+            "Verification failed: persisted startup_script content does not match source file."
+        )
 
     print("Startup script updated and verified.")
     print(f"artifact_id={args.artifact_id}")
@@ -65,7 +69,9 @@ async def _run(args: argparse.Namespace) -> None:
 
 
 async def main() -> None:
-    parser = argparse.ArgumentParser(description="Update startup_script for a Hypha agent artifact")
+    parser = argparse.ArgumentParser(
+        description="Update startup_script for a Hypha agent artifact"
+    )
     parser.add_argument(
         "--artifact-id",
         default="hypha-agents/grammatical-deduction-bury-enormously",
