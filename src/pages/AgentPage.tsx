@@ -1815,11 +1815,6 @@ _install_httpx_proxy_patch()
         role: 'system',
         content: 'When tools/functions are available, prefer calling them to retrieve concrete results. Do not claim inability if a relevant tool exists.'
       });
-
-      history.unshift({
-        role: 'system',
-        content: `Stop iterating tools after about ${Math.floor(AGENT_ITERATION_SOFT_TIMEOUT_MS / 1000)} seconds and present the best results gathered so far. If a single-term fallback search was used, explicitly mention that in the response.`
-      });
       
       // Add the new message
       history.push({ role: newMessage.role, content: newMessage.content });
@@ -2034,6 +2029,7 @@ async def _chat_wrapper():
         total_tool_calls = 0
         successful_tool_calls = 0
         successful_tool_results = []
+        timeout_finalize_requested = False
 
         def _short_text(value, max_len=400):
           text = str(value)
@@ -2135,24 +2131,17 @@ async def _chat_wrapper():
                 "content": f"Error: Tool '{function_name}' is not available.",
               })
 
-          if successful_tool_calls > 0:
-            summary_text = _summarize_tool_results()
-            if isinstance(summary_text, str) and summary_text:
-              send_response({"text": summary_text})
-              return
-
-          if asyncio.get_event_loop().time() >= soft_deadline:
-            summary_text = _summarize_tool_results()
-            timeout_note = f"I stopped tool iterations after about {int(soft_timeout_ms / 1000)} seconds and returned the best results gathered so far."
-            if isinstance(summary_text, str) and summary_text:
-              send_response({"text": f"{summary_text}\\n\\n{timeout_note}"})
-            else:
-              send_response({"text": timeout_note})
-            return
+          if asyncio.get_event_loop().time() >= soft_deadline and not timeout_finalize_requested:
+            timeout_finalize_requested = True
+            messages.append({
+              "role": "system",
+              "content": f"You have been working for about {int(soft_timeout_ms / 1000)} seconds. Provide the best possible final answer now using the tool results and errors already collected. Do not call additional tools unless absolutely necessary.",
+            })
 
           turns += 1
           next_tools_json = json.dumps(tools) if tools else None
-          next_tool_choice_json = json.dumps("auto") if tools else None
+          next_tool_choice = "none" if timeout_finalize_requested else "auto"
+          next_tool_choice_json = json.dumps(next_tool_choice) if tools else None
           next_result_json = await hypha_chat_proxy(
             json.dumps(messages),
             next_tools_json,
