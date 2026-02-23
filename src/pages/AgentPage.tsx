@@ -61,6 +61,7 @@ const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
 
 const CHAT_MODEL_IDS = new Set(CHAT_MODEL_OPTIONS.map(option => option.value));
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
+const BRANCH_SPECIFIC_CHAT_PROXY_APP_ID = 'chat-proxy-dev-fix-bia-hit-extraction-and-branch-proxy';
 const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
 const MAX_CHAT_PROXY_APP_ID_LENGTH = 63;
 const CHAT_PROXY_REQUEST_TIMEOUT_MS = 900_000;
@@ -139,10 +140,14 @@ const getChatProxyServiceIds = (): string[] => {
   ]).map(normalizeBranchRefName);
 
   const branchAppIds = branchNameCandidates.map((branchName) => makeDevAppId(branchName));
+  const nonGenericConfiguredAppId = configuredAppId && configuredAppId !== DEFAULT_DEV_CHAT_PROXY_APP_ID
+    ? configuredAppId
+    : '';
   const appIdCandidates = uniqueNonEmptyValues([
     explicitBranchProxyAppId,
-    configuredAppId,
     ...branchAppIds,
+    BRANCH_SPECIFIC_CHAT_PROXY_APP_ID,
+    nonGenericConfiguredAppId,
     DEFAULT_DEV_CHAT_PROXY_APP_ID,
   ]);
 
