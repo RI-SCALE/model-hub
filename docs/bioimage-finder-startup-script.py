@@ -499,6 +499,7 @@ Use tools first whenever a user asks for archive results.
 - Prefer OR-style brief queries first (for example: "mouse OR tumor").
 - If queries fail repeatedly or are empty, simplify to single-term fallbacks ("tumor", "mouse", "cancer").
 - Make at most two fallback calls, then provide a best-effort final answer and explicitly mention beta limitations.
+- If any dataset query already returns at least the requested number of results, stop calling tools and answer immediately.
 - Tool outputs are intentionally compact and may include an assistant_summary field; use that summary when finalizing under timeout/fallback.
 Then provide a concise human summary with links/accessions whenever available.
 """
