@@ -43,8 +43,8 @@
     "zustand": "^5.0.3"
   },
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build && npm run copy-docs",
+    "start": "node scripts/with-branch-env.js react-scripts start",
+    "build": "node scripts/with-branch-env.js react-scripts build && npm run copy-docs",
     "copy-docs": "node scripts/copy-docs.js",
     "test": "react-scripts test",
     "test:e2e": "playwright test",
