@@ -69,6 +69,7 @@ const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 60_000;
 const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 900_000;
 const AGENT_TOOL_EXECUTION_LIMIT = 50;
 const AGENT_ITERATION_SOFT_TIMEOUT_MS = 90_000;
+const AGENT_ITERATION_HARD_TIMEOUT_MS = 120_000;
 
 const slugifyBranchName = (branchName: string): string => {
   const normalized = branchName
@@ -2056,11 +2057,11 @@ async def _chat_wrapper():
         try:
           result = json.loads(result_json)
         except Exception as parse_err:
-          send_response({"text": f"Error from proxy: Invalid JSON response ({parse_err})"})
+          send_response({"text": "I’m having trouble reading the backend response right now. Please try again."})
           return
         
         if isinstance(result, dict) and "error" in result:
-             send_response({"text": f"Error from proxy: {result['error']}"})
+             send_response({"text": "I’m having trouble reaching the chat backend right now. Please try again in a moment."})
              return
 
         choice = result['choices'][0]
@@ -2070,7 +2071,9 @@ async def _chat_wrapper():
         
         max_turns = ${AGENT_TOOL_EXECUTION_LIMIT}
         soft_timeout_ms = ${AGENT_ITERATION_SOFT_TIMEOUT_MS}
+        hard_timeout_ms = ${AGENT_ITERATION_HARD_TIMEOUT_MS}
         soft_deadline = asyncio.get_event_loop().time() + (soft_timeout_ms / 1000.0)
+        hard_deadline = asyncio.get_event_loop().time() + (hard_timeout_ms / 1000.0)
         turns = 0
         tool_result_cache = {}
         total_tool_calls = 0
@@ -2238,6 +2241,16 @@ async def _chat_wrapper():
             return json.dumps({"error": "request_timeout", "code": "request_timeout", "status": 408})
 
         while True:
+          if asyncio.get_event_loop().time() >= hard_deadline:
+            summary_text = _summarize_tool_results()
+            if isinstance(summary_text, str) and summary_text:
+              send_response({
+                "text": f"{summary_text}\\n\\nI’m returning the best results gathered so far.",
+              })
+            else:
+              send_response({"text": "I’m taking longer than expected, so I’m stopping here. Please try again."})
+            return
+
           tool_calls = response_message.get('tool_calls')
           content = response_message.get('content')
 
@@ -2348,6 +2361,14 @@ async def _chat_wrapper():
               "content": f"You have been working for about {int(soft_timeout_ms / 1000)} seconds. Provide the best possible final answer now using the tool results and errors already collected. Do not call additional tools unless absolutely necessary.",
             })
 
+          if timeout_finalize_requested and successful_tool_results and turns >= 3:
+            summary_text = _summarize_tool_results()
+            if isinstance(summary_text, str) and summary_text:
+              send_response({
+                "text": f"{summary_text}\\n\\nI’m returning the best results gathered so far.",
+              })
+              return
+
           turns += 1
           next_tools_json = json.dumps(tools) if tools else None
           next_tool_choice = "none" if timeout_finalize_requested else "auto"
@@ -2359,9 +2380,9 @@ async def _chat_wrapper():
             if successful_tool_results:
               summary_text = _summarize_tool_results()
               if isinstance(summary_text, str) and summary_text:
-                send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far because a follow-up model response could not be parsed ({parse_err})."})
+                send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far due to a temporary backend issue."})
                 return
-            send_response({"text": f"Error from proxy: Invalid JSON response ({parse_err})"})
+            send_response({"text": "I’m having trouble finishing this request right now. Please try again."})
             return
 
           if isinstance(next_result, dict) and "error" in next_result:
@@ -2387,16 +2408,16 @@ async def _chat_wrapper():
             if successful_tool_results:
               summary_text = _summarize_tool_results()
               if isinstance(summary_text, str) and summary_text:
-                send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far because the follow-up model call failed: {next_result['error']}"})
+                send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far due to a temporary backend issue."})
                 return
-            send_response({"text": f"Error from proxy: {next_result['error']}"})
+            send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
             return
 
           response_message = next_result['choices'][0]['message']
 
     except Exception as e:
         traceback.print_exc()
-        send_response({"text": f"Error executing chat: {str(e)}"})
+      send_response({"text": "I hit a temporary runtime issue while preparing the response. Please try again."})
 
 await _chat_wrapper()
 `;

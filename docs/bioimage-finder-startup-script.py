@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any, Dict, List
 from urllib.parse import quote
 
@@ -347,18 +348,20 @@ async def _search_via_proxy(kind: str, query: str, limit: int) -> Dict[str, Any]
         return {"error": f"Proxy search failed: {exp}"}
 
 
-async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
-    """
-    Search BioImage Archive datasets by full-text query.
+def _fallback_terms_from_query(query: str) -> List[str]:
+    terms: List[str] = []
+    for part in re.split(r"\bAND\b|\bOR\b", query, flags=re.IGNORECASE):
+        candidate = part.strip().strip('"\'()[]{}')
+        if len(candidate) < 2:
+            continue
+        if candidate.lower() in {"and", "or", "not"}:
+            continue
+        if candidate not in terms:
+            terms.append(candidate)
+    return terms
 
-    Args:
-        query: User search text, supports boolean operators (AND/OR/NOT), quotes, wildcards.
-        limit: Maximum number of hits to return in the summarized output.
 
-    Returns:
-        Dictionary with request URL, total count, and top results.
-    """
-    safe_limit = max(1, int(limit))
+async def _search_datasets_once(query: str, safe_limit: int) -> Dict[str, Any]:
     proxied = await _search_via_proxy("datasets", query, safe_limit)
     if isinstance(proxied, dict):
         if "error" in proxied:
@@ -385,6 +388,32 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
         "results": top_hits,
     }
     return _normalize_search_payload("datasets", query, safe_limit, raw_payload)
+
+
+async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
+    """
+    Search BioImage Archive datasets by full-text query.
+
+    Args:
+        query: User search text, supports boolean operators (AND/OR/NOT), quotes, wildcards.
+        limit: Maximum number of hits to return in the summarized output.
+
+    Returns:
+        Dictionary with request URL, total count, and top results.
+    """
+    safe_limit = max(1, int(limit))
+    primary_result = await _search_datasets_once(query, safe_limit)
+    if isinstance(primary_result.get("total"), int) and primary_result.get("total", 0) > 0:
+        return primary_result
+
+    if " and " in query.lower():
+        for term in _fallback_terms_from_query(query)[:2]:
+            fallback_result = await _search_datasets_once(term, safe_limit)
+            if isinstance(fallback_result.get("total"), int) and fallback_result.get("total", 0) > 0:
+                fallback_result["fallback_from_query"] = query
+                return fallback_result
+
+    return primary_result
 
 
 async def search_images(query: str, limit: int = 10) -> Dict[str, Any]:
@@ -497,6 +526,7 @@ Use tools first whenever a user asks for archive results.
 - The beta index is limited/incomplete, so infer likely terms from startup probe output.
 - When querying based on the user's prompt, start very briefly.
 - Prefer OR-style brief queries first (for example: "mouse OR tumor").
+- If an OR query returns no dataset results, do not switch to AND. Immediately try single-term fallbacks.
 - If queries fail repeatedly or are empty, simplify to single-term fallbacks ("tumor", "mouse", "cancer").
 - Make at most two fallback calls, then provide a best-effort final answer and explicitly mention beta limitations.
 - If any dataset query already returns at least the requested number of results, stop calling tools and answer immediately.
