@@ -63,9 +63,9 @@ const CHAT_MODEL_IDS = new Set(CHAT_MODEL_OPTIONS.map(option => option.value));
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
 const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
 const MAX_CHAT_PROXY_APP_ID_LENGTH = 63;
-const CHAT_PROXY_REQUEST_TIMEOUT_MS = 300_000;
-const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 15_000;
-const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 300_000;
+const CHAT_PROXY_REQUEST_TIMEOUT_MS = 900_000;
+const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 60_000;
+const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 900_000;
 const AGENT_TOOL_EXECUTION_LIMIT = 50;
 const AGENT_ITERATION_SOFT_TIMEOUT_MS = 90_000;
 
@@ -2071,6 +2071,17 @@ async def _chat_wrapper():
 
           return "\\n".join(lines)
 
+        def _is_timeout_error_payload(payload):
+          if isinstance(payload, str):
+            lowered = payload.lower()
+            return "timed out" in lowered or "timeout" in lowered
+          if isinstance(payload, dict):
+            maybe_error = payload.get("error") or payload.get("message")
+            if isinstance(maybe_error, str):
+              lowered = maybe_error.lower()
+              return "timed out" in lowered or "timeout" in lowered
+          return False
+
         while True:
           tool_calls = response_message.get('tool_calls')
           content = response_message.get('content')
@@ -2136,6 +2147,10 @@ async def _chat_wrapper():
                 })
               except Exception as e:
                 error_text = str(e)
+                successful_tool_results.append({
+                  "name": function_name,
+                  "output": f"Error: {error_text}",
+                })
                 messages.append({
                   "tool_call_id": tool_call_id,
                   "role": "tool",
@@ -2170,7 +2185,7 @@ async def _chat_wrapper():
           try:
             next_result = json.loads(next_result_json)
           except Exception as parse_err:
-            if successful_tool_calls > 0:
+            if successful_tool_results:
               summary_text = _summarize_tool_results()
               if isinstance(summary_text, str) and summary_text:
                 send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far because a follow-up model response could not be parsed ({parse_err})."})
@@ -2179,7 +2194,31 @@ async def _chat_wrapper():
             return
 
           if isinstance(next_result, dict) and "error" in next_result:
-            if successful_tool_calls > 0:
+            if _is_timeout_error_payload(next_result) and not timeout_finalize_requested and total_tool_calls > 0:
+              timeout_finalize_requested = True
+              messages.append({
+                "role": "system",
+                "content": "The previous model call timed out. Provide the best possible final answer now using the tool outputs already collected. Do not call additional tools.",
+              })
+              forced_result_json = await hypha_chat_proxy(
+                json.dumps(messages),
+                json.dumps(tools) if tools else None,
+                json.dumps("none") if tools else None,
+                '${chatModel}'
+              )
+              try:
+                forced_result = json.loads(forced_result_json)
+                if isinstance(forced_result, dict) and "error" in forced_result:
+                  raise RuntimeError(str(forced_result.get("error")))
+                forced_message = forced_result['choices'][0]['message'] if isinstance(forced_result, dict) else {}
+                forced_content = forced_message.get('content') if isinstance(forced_message, dict) else None
+                if isinstance(forced_content, str) and forced_content.strip():
+                  send_response({"text": forced_content})
+                  return
+              except Exception:
+                pass
+
+            if successful_tool_results:
               summary_text = _summarize_tool_results()
               if isinstance(summary_text, str) and summary_text:
                 send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far because the follow-up model call failed: {next_result['error']}"})
