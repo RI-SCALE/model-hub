@@ -2407,6 +2407,13 @@ async def _chat_wrapper():
                     error_text = f"{error_text}; fallback failed: {fallback_exp}"
 
                 if recovered_with_fallback:
+                  if function_name in ('search_datasets', 'search_images') and isinstance(fallback_response, dict):
+                    total_value = fallback_response.get('total')
+                    if isinstance(total_value, int):
+                      if total_value == 0:
+                        empty_search_tool_results += 1
+                      else:
+                        saw_nonempty_search_result = True
                   if isinstance(fallback_response, dict) and fallback_response.get('single_term_fallback_used'):
                     single_term_fallback_used = True
                     terms = fallback_response.get('single_term_fallback_terms')
