@@ -2031,281 +2031,30 @@ async def _chat_wrapper():
         soft_deadline = asyncio.get_event_loop().time() + (soft_timeout_ms / 1000.0)
         turns = 0
         tool_result_cache = {}
-        service_unavailable_tool_errors = 0
-        upstream_server_tool_errors = 0
-        empty_search_tool_results = 0
-        saw_nonempty_search_result = False
-        single_term_fallback_used = False
-        single_term_fallback_terms = []
         total_tool_calls = 0
-        search_snapshots = []
+        successful_tool_calls = 0
+        successful_tool_results = []
 
-        def _safe_parse_hits_payload(payload):
-          hits_value = payload.get("hits", []) if isinstance(payload, dict) else []
-          if isinstance(hits_value, dict):
-            hits_list = hits_value.get("hits", [])
-            if not isinstance(hits_list, list):
-              hits_list = []
-            total_obj = hits_value.get("total", {}) if isinstance(hits_value.get("total"), dict) else {}
-            total_value = total_obj.get("value") if isinstance(total_obj, dict) else None
-            if not isinstance(total_value, int):
-              total_value = len(hits_list)
-            return hits_list, total_value
+        def _short_text(value, max_len=400):
+          text = str(value)
+          if len(text) <= max_len:
+            return text
+          return text[:max_len] + "..."
 
-          if isinstance(hits_value, list):
-            return hits_value, len(hits_value)
-
-          return [], 0
-
-        def _extract_relaxed_terms(query_text):
-          text = str(query_text or "")
-          for ch in ['(', ')', '[', ']', '{', '}', '"', "'", ',', ';', ':']:
-            text = text.replace(ch, ' ')
-          terms = []
-          seen = set()
-          for part in text.split():
-            lowered = part.strip().lower()
-            if not lowered or lowered in ('and', 'or', 'not'):
-              continue
-            if len(lowered) <= 2:
-              continue
-            if lowered in seen:
-              continue
-            seen.add(lowered)
-            terms.append(lowered)
-          return terms[:4]
-
-        def _collect_search_snapshot(function_name, response_payload):
-          if function_name not in ('search_datasets', 'search_images'):
-            return
-          if not isinstance(response_payload, dict):
-            return
-          total_value = response_payload.get('total')
-          results_value = response_payload.get('results')
-          if not isinstance(total_value, int) or not isinstance(results_value, list):
-            return
-          search_snapshots.append({
-            'kind': function_name,
-            'query': str(response_payload.get('query') or ''),
-            'total': total_value,
-            'results': results_value,
-            'single_term_fallback_used': bool(response_payload.get('single_term_fallback_used')),
-            'single_term_fallback_terms': response_payload.get('single_term_fallback_terms') if isinstance(response_payload.get('single_term_fallback_terms'), list) else [],
-          })
-
-        def _format_search_summary():
-          if not search_snapshots:
-            return None
-          ranked = sorted(search_snapshots, key=lambda item: int(item.get('total') or 0), reverse=True)
-          best = ranked[0]
-          best_results = best.get('results') or []
-          if not isinstance(best_results, list) or not best_results:
+        def _summarize_tool_results():
+          if not successful_tool_results:
             return None
 
-          best_kind = best.get('kind')
-          label = 'datasets' if best_kind == 'search_datasets' else 'images'
-          lines = [f"I found {min(5, len(best_results))} {label} for query: {best.get('query')}"]
-          for idx, item in enumerate(best_results[:5], start=1):
-            if not isinstance(item, dict):
-              continue
-            title = item.get('title') or item.get('name') or item.get('id') or item.get('accession') or 'Untitled'
-            accession = item.get('accession') or ''
-            url = item.get('url') or ''
-            if url:
-              lines.append(f"{idx}. {title} ({url})")
-            elif accession:
-              lines.append(f"{idx}. {title} (accession: {accession})")
-            else:
-              lines.append(f"{idx}. {title}")
+          lines = ["I executed the available tool(s) and collected these results:"]
+          for index, item in enumerate(successful_tool_results[:5], start=1):
+            tool_name = item.get('name') or 'tool'
+            tool_output = item.get('output')
+            lines.append(f"{index}. {tool_name}: {_short_text(tool_output, 600)}")
 
-          fallback_terms = best.get('single_term_fallback_terms') if isinstance(best.get('single_term_fallback_terms'), list) else []
-          if best.get('single_term_fallback_used'):
-            if fallback_terms:
-              lines.append(f"Note: single-term fallback search was used with terms: {', '.join([str(term) for term in fallback_terms])}")
-            else:
-              lines.append("Note: single-term fallback search was used.")
+          if len(successful_tool_results) > 5:
+            lines.append(f"...and {len(successful_tool_results) - 5} more tool result(s).")
+
           return "\\n".join(lines)
-
-        async def _fetch_archive_hits(base_url, query_text):
-          encoded_query = quote(str(query_text), safe='"()[]{}:*?+-/\\\\')
-          fetch_url = f"{base_url}?query={encoded_query}"
-          async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(fetch_url)
-            response.raise_for_status()
-            payload = response.json()
-          hits, total = _safe_parse_hits_payload(payload)
-          return fetch_url, hits, total
-
-        def _first_nonempty_string(values):
-          for value in values:
-            if isinstance(value, str):
-              text = value.strip()
-              if text:
-                return text
-          return None
-
-        def _get_additional_metadata_value(source_payload, metadata_name):
-          if not isinstance(source_payload, dict):
-            return None
-          metadata_entries = source_payload.get('additional_metadata')
-          if not isinstance(metadata_entries, list):
-            return None
-          for entry in metadata_entries:
-            if not isinstance(entry, dict):
-              continue
-            if entry.get('name') != metadata_name:
-              continue
-            value_payload = entry.get('value')
-            if isinstance(value_payload, dict):
-              return value_payload
-          return None
-
-        def _extract_dataset_result(item):
-          source_payload = item.get('_source') if isinstance(item, dict) else None
-          if not isinstance(source_payload, dict):
-            source_payload = item if isinstance(item, dict) else {}
-
-          accession = _first_nonempty_string([
-            source_payload.get('accession_id'),
-            source_payload.get('accession'),
-            source_payload.get('id'),
-            item.get('_id') if isinstance(item, dict) else None,
-          ])
-          title = _first_nonempty_string([
-            source_payload.get('title'),
-            source_payload.get('name'),
-            source_payload.get('dataset'),
-            accession,
-            source_payload.get('uuid'),
-            item.get('_id') if isinstance(item, dict) else None,
-          ]) or 'Untitled'
-
-          return {
-            "title": title,
-            "accession": accession or "",
-            "url": f"https://beta.bioimagearchive.org/bioimage-archive/study/{accession}" if accession else None,
-            "uuid": source_payload.get('uuid') if isinstance(source_payload.get('uuid'), str) else None,
-            "description": source_payload.get('description') if isinstance(source_payload.get('description'), str) else None,
-            "doi": source_payload.get('doi') if isinstance(source_payload.get('doi'), str) else None,
-            "release_date": source_payload.get('release_date') if isinstance(source_payload.get('release_date'), str) else None,
-            "score": item.get('_score') if isinstance(item, dict) else None,
-          }
-
-        def _extract_image_result(item):
-          source_payload = item.get('_source') if isinstance(item, dict) else None
-          if not isinstance(source_payload, dict):
-            source_payload = item if isinstance(item, dict) else {}
-
-          file_pattern_payload = _get_additional_metadata_value(source_payload, 'file_pattern')
-          file_pattern = file_pattern_payload.get('file_pattern') if isinstance(file_pattern_payload, dict) else None
-
-          creation_process = source_payload.get('creation_process') if isinstance(source_payload.get('creation_process'), dict) else {}
-          acquisition_process = creation_process.get('acquisition_process') if isinstance(creation_process.get('acquisition_process'), list) else []
-          first_acquisition = acquisition_process[0] if acquisition_process and isinstance(acquisition_process[0], dict) else {}
-          acquisition_title = first_acquisition.get('title') if isinstance(first_acquisition.get('title'), str) else None
-
-          accession = _first_nonempty_string([
-            source_payload.get('accession_id'),
-            source_payload.get('accession'),
-            source_payload.get('study_accession'),
-          ])
-          image_id = _first_nonempty_string([
-            source_payload.get('uuid'),
-            item.get('_id') if isinstance(item, dict) else None,
-          ]) or ""
-
-          title = _first_nonempty_string([
-            source_payload.get('title'),
-            source_payload.get('name'),
-            source_payload.get('label'),
-            file_pattern if isinstance(file_pattern, str) else None,
-            acquisition_title,
-            image_id,
-          ]) or 'Untitled'
-
-          return {
-            "id": image_id,
-            "accession": accession or "",
-            "title": title,
-            "study_url": f"https://beta.bioimagearchive.org/bioimage-archive/study/{accession}" if accession else None,
-            "dataset_uuid": source_payload.get('submission_dataset_uuid') if isinstance(source_payload.get('submission_dataset_uuid'), str) else None,
-            "file_pattern": file_pattern if isinstance(file_pattern, str) else None,
-            "acquisition_title": acquisition_title,
-            "score": item.get('_score') if isinstance(item, dict) else None,
-          }
-
-        async def _fallback_archive_search(function_name, function_args):
-          query = function_args.get("query", "") if isinstance(function_args, dict) else ""
-          limit_raw = function_args.get("limit", 10) if isinstance(function_args, dict) else 10
-          try:
-            limit_value = int(limit_raw)
-          except Exception:
-            limit_value = 10
-          limit_value = max(1, limit_value)
-
-          is_image_search = function_name == 'search_images'
-          base_url = "https://beta.bioimagearchive.org/search/search/fts/image" if is_image_search else "https://beta.bioimagearchive.org/search/search/fts"
-          url, hits, total = await _fetch_archive_hits(base_url, str(query))
-          fallback_used = False
-          fallback_terms = []
-
-          if total == 0:
-            relaxed_terms = _extract_relaxed_terms(query)
-            if len(relaxed_terms) >= 2:
-              merged_hits = []
-              seen_keys = set()
-              for relaxed_term in relaxed_terms:
-                _, candidate_hits, _ = await _fetch_archive_hits(base_url, relaxed_term)
-                for item in candidate_hits:
-                  key = (
-                    item.get('accession')
-                    or item.get('id')
-                    or item.get('_id')
-                    or json.dumps(item, sort_keys=True, ensure_ascii=False)
-                  )
-                  if key in seen_keys:
-                    continue
-                  seen_keys.add(key)
-                  merged_hits.append(item)
-                  if len(merged_hits) >= limit_value:
-                    break
-                if len(merged_hits) >= limit_value:
-                  break
-              if merged_hits:
-                hits = merged_hits
-                total = len(merged_hits)
-                fallback_used = True
-                fallback_terms = relaxed_terms
-                url = f"{base_url}?query={quote(' '.join(relaxed_terms), safe='"()[]{}:*?+-/\\\\')}"
-          top_hits = []
-
-          if is_image_search:
-            for item in hits[:limit_value]:
-              top_hits.append(_extract_image_result(item))
-          else:
-            for item in hits[:limit_value]:
-              top_hits.append(_extract_dataset_result(item))
-
-          return {
-            "query": str(query),
-            "url": url,
-            "total": total,
-            "results": top_hits,
-            "single_term_fallback_used": fallback_used,
-            "single_term_fallback_terms": fallback_terms,
-          }
-
-        def _is_archive_service_error(error_text, status_code):
-          if not isinstance(error_text, str):
-            return False
-          lowered = error_text.lower()
-          if 'beta.bioimagearchive.org' not in lowered:
-            return False
-          return (
-            f"server error '{status_code}'" in lowered
-            or f"http {status_code}" in lowered
-            or f"status code {status_code}" in lowered
-          )
 
         while True:
           tool_calls = response_message.get('tool_calls')
@@ -2358,27 +2107,11 @@ async def _chat_wrapper():
                   tool_result_cache[cache_key] = function_response
 
                 function_response_text = str(function_response)
-                _collect_search_snapshot(function_name, function_response)
-                if function_name in ('search_datasets', 'search_images') and '503 Service Unavailable' in function_response_text:
-                  service_unavailable_tool_errors += 1
-                if function_name in ('search_datasets', 'search_images') and (
-                  _is_archive_service_error(function_response_text, 500)
-                  or _is_archive_service_error(function_response_text, 502)
-                  or _is_archive_service_error(function_response_text, 504)
-                ):
-                  upstream_server_tool_errors += 1
-                if function_name in ('search_datasets', 'search_images') and isinstance(function_response, dict):
-                  total_value = function_response.get('total')
-                  if isinstance(total_value, int):
-                    if total_value == 0:
-                      empty_search_tool_results += 1
-                    else:
-                      saw_nonempty_search_result = True
-                  if function_response.get('single_term_fallback_used'):
-                    single_term_fallback_used = True
-                    terms = function_response.get('single_term_fallback_terms')
-                    if isinstance(terms, list):
-                      single_term_fallback_terms.extend([str(term) for term in terms if str(term)])
+                successful_tool_calls += 1
+                successful_tool_results.append({
+                  "name": function_name,
+                  "output": function_response_text,
+                })
 
                 messages.append({
                   "tool_call_id": tool_call_id,
@@ -2388,47 +2121,6 @@ async def _chat_wrapper():
                 })
               except Exception as e:
                 error_text = str(e)
-                recovered_with_fallback = False
-                if function_name in ('search_datasets', 'search_images') and 'slice(None,' in error_text:
-                  try:
-                    fallback_response = await _fallback_archive_search(function_name, function_args)
-                    fallback_response_text = str(fallback_response)
-                    tool_result_cache[cache_key] = fallback_response
-                    _collect_search_snapshot(function_name, fallback_response)
-                    messages.append({
-                      "tool_call_id": tool_call_id,
-                      "role": "tool",
-                      "name": function_name,
-                      "content": fallback_response_text,
-                    })
-                    recovered_with_fallback = True
-                    print(f"Recovered {function_name} via fallback parser after slice error")
-                  except Exception as fallback_exp:
-                    error_text = f"{error_text}; fallback failed: {fallback_exp}"
-
-                if recovered_with_fallback:
-                  if function_name in ('search_datasets', 'search_images') and isinstance(fallback_response, dict):
-                    total_value = fallback_response.get('total')
-                    if isinstance(total_value, int):
-                      if total_value == 0:
-                        empty_search_tool_results += 1
-                      else:
-                        saw_nonempty_search_result = True
-                  if isinstance(fallback_response, dict) and fallback_response.get('single_term_fallback_used'):
-                    single_term_fallback_used = True
-                    terms = fallback_response.get('single_term_fallback_terms')
-                    if isinstance(terms, list):
-                      single_term_fallback_terms.extend([str(term) for term in terms if str(term)])
-                  continue
-
-                if function_name in ('search_datasets', 'search_images') and '503 Service Unavailable' in error_text:
-                  service_unavailable_tool_errors += 1
-                if function_name in ('search_datasets', 'search_images') and (
-                  _is_archive_service_error(error_text, 500)
-                  or _is_archive_service_error(error_text, 502)
-                  or _is_archive_service_error(error_text, 504)
-                ):
-                  upstream_server_tool_errors += 1
                 messages.append({
                   "tool_call_id": tool_call_id,
                   "role": "tool",
@@ -2443,39 +2135,15 @@ async def _chat_wrapper():
                 "content": f"Error: Tool '{function_name}' is not available.",
               })
 
-          if service_unavailable_tool_errors >= 2:
-            send_response({
-              "text": "The archive search service is temporarily unavailable (HTTP 503), so I can’t retrieve reliable results right now. Please try again shortly."
-            })
-            return
-
-          if upstream_server_tool_errors >= 2:
-            send_response({
-              "text": "The archive search API is currently returning upstream errors (HTTP 500/502/504), so I can’t retrieve reliable results right now. Please try again shortly."
-            })
-            return
-
-          if empty_search_tool_results >= 3 and not saw_nonempty_search_result:
-            send_response({
-              "text": "I ran multiple archive searches but found no matching datasets/images for this query right now. Please try a broader or different query."
-            })
-            return
-
-          if saw_nonempty_search_result and total_tool_calls >= 1:
-            summary_text = _format_search_summary()
+          if successful_tool_calls > 0:
+            summary_text = _summarize_tool_results()
             if isinstance(summary_text, str) and summary_text:
               send_response({"text": summary_text})
               return
 
           if asyncio.get_event_loop().time() >= soft_deadline:
-            summary_text = _format_search_summary()
+            summary_text = _summarize_tool_results()
             timeout_note = f"I stopped tool iterations after about {int(soft_timeout_ms / 1000)} seconds and returned the best results gathered so far."
-            if single_term_fallback_used:
-              unique_terms = sorted({term for term in single_term_fallback_terms if term})
-              if unique_terms:
-                timeout_note = f"{timeout_note} Single-term fallback was used ({', '.join(unique_terms)})."
-              else:
-                timeout_note = f"{timeout_note} Single-term fallback was used."
             if isinstance(summary_text, str) and summary_text:
               send_response({"text": f"{summary_text}\\n\\n{timeout_note}"})
             else:
@@ -2494,8 +2162,8 @@ async def _chat_wrapper():
           try:
             next_result = json.loads(next_result_json)
           except Exception as parse_err:
-            if saw_nonempty_search_result:
-              summary_text = _format_search_summary()
+            if successful_tool_calls > 0:
+              summary_text = _summarize_tool_results()
               if isinstance(summary_text, str) and summary_text:
                 send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far because a follow-up model response could not be parsed ({parse_err})."})
                 return
@@ -2503,8 +2171,8 @@ async def _chat_wrapper():
             return
 
           if isinstance(next_result, dict) and "error" in next_result:
-            if saw_nonempty_search_result:
-              summary_text = _format_search_summary()
+            if successful_tool_calls > 0:
+              summary_text = _summarize_tool_results()
               if isinstance(summary_text, str) and summary_text:
                 send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far because the follow-up model call failed: {next_result['error']}"})
                 return
