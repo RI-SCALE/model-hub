@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import os
 from pathlib import Path
 from typing import Any, Dict
 
@@ -13,12 +14,44 @@ def _extract_manifest(payload: Dict[str, Any]) -> Dict[str, Any]:
     return dict(payload)
 
 
+def _load_env_file(env_path: Path) -> Dict[str, str]:
+    values: Dict[str, str] = {}
+    if not env_path.exists():
+        return values
+
+    for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        values[key] = value
+    return values
+
+
+def _resolve_token(token_arg: str | None, env_file: Path) -> str:
+    if token_arg:
+        return token_arg
+
+    env_values = _load_env_file(env_file)
+    token = env_values.get("HYPHA_AGENTS_TOKEN") or env_values.get("HYPHA_TOKEN")
+    if token:
+        return token
+
+    token = os.environ.get("HYPHA_AGENTS_TOKEN") or os.environ.get("HYPHA_TOKEN")
+    if token:
+        return token
+
+    raise ValueError(
+        "A token is required. Provide --token, set HYPHA_AGENTS_TOKEN/HYPHA_TOKEN, "
+        "or include HYPHA_AGENTS_TOKEN in chat-proxy-app/.env."
+    )
+
+
 async def _run(args: argparse.Namespace) -> None:
-    token = args.token
-    if not token:
-        raise ValueError(
-            "A token is required. Pass --token or set HYPHA_TOKEN in the environment."
-        )
+    env_file_path = Path(args.env_file).resolve()
+    token = _resolve_token(args.token, env_file_path)
 
     startup_script_path = Path(args.startup_script).resolve()
     if not startup_script_path.exists():
@@ -35,7 +68,11 @@ async def _run(args: argparse.Namespace) -> None:
     )
     artifact_manager = await server.get_service("public/artifact-manager")
 
-    artifact = await artifact_manager.read(args.artifact_id)
+    try:
+        artifact = await artifact_manager.get(args.artifact_id)
+    except Exception:
+        artifact = await artifact_manager.read(args.artifact_id)
+
     manifest = _extract_manifest(artifact)
     manifest["startup_script"] = startup_script
 
@@ -90,7 +127,12 @@ async def main() -> None:
     parser.add_argument(
         "--token",
         default=None,
-        help="Hypha token. Prefer passing via env and shell substitution.",
+        help="Hypha token. If omitted, load HYPHA_AGENTS_TOKEN from --env-file.",
+    )
+    parser.add_argument(
+        "--env-file",
+        default="chat-proxy-app/.env",
+        help="Path to env file that contains HYPHA_AGENTS_TOKEN",
     )
     parser.add_argument(
         "--verify-contains",

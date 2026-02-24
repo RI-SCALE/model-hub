@@ -1045,7 +1045,7 @@ const AgentPage: React.FC = () => {
         // We look for a requirements.txt file to install extra dependencies
         // Also check manifest for dependencies?
         const reqFile = files.find((f: any) => f.name === 'requirements.txt');
-        let packages: string[] = ["hypha-rpc", "openai"]; // Always install hypha-rpc and openai
+        let packages: string[] = ["hypha-rpc==0.21.19", "openai"]; // Always install hypha-rpc and openai
 
         if (reqFile) {
             console.log("Installing dependencies from requirements.txt...");
@@ -2969,6 +2969,7 @@ await _chat_wrapper()
                 </div>
               </div>
               <div className="flex items-center space-x-2">
+                 {false && (
                  <button 
                   onClick={handleShareSession} 
                   className={`text-gray-400 hover:text-purple-500 transition-colors p-2 rounded-full hover:bg-purple-50`}
@@ -2976,6 +2977,7 @@ await _chat_wrapper()
                 >
                   <FiShare2 size={18} />
                 </button>
+                 )}
                  <button 
                   onClick={() => setShowLogs(!showLogs)}  
                   className={`text-gray-400 hover:text-blue-500 transition-colors p-2 rounded-full hover:bg-blue-50 ${showLogs ? 'text-blue-500 bg-blue-50' : ''}`}
