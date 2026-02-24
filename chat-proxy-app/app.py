@@ -132,7 +132,9 @@ async def resolve_url(
             request_kwargs["content"] = str(body)
 
     try:
-        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=timeout_seconds, follow_redirects=True
+        ) as client:
             response = await client.request(**request_kwargs)
     except Exception as exp:
         logger.warning("resolve_url failed for %s: %s", url, exp)

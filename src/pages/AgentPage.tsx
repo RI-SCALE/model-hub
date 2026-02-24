@@ -1590,9 +1590,13 @@ _install_httpx_proxy_patch()
                throw new Error("Proxy service found but has no chat_completion method.");
            }
 
+           const normalizedToolChoice = args.tool_choice;
+           const isFinalizationCall = normalizedToolChoice === 'none';
+           const maxAttempts = isFinalizationCall ? 2 : 3;
+
            let result: any = null;
            let completionError: Error | null = null;
-           for (let attempt = 1; attempt <= 3; attempt += 1) {
+           for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
              try {
                const preferAlternateService = attempt > 1;
                const proxyForAttempt: any = attempt === 1
@@ -1604,7 +1608,7 @@ _install_httpx_proxy_patch()
                  `chat_completion response attempt ${attempt} from ${(globalThis as any).__chatProxyServiceId || CHAT_PROXY_SERVICE_ID}`
                );
 
-               if (isTimeoutPayload(result) && attempt < 3) {
+               if (isTimeoutPayload(result) && attempt < maxAttempts) {
                  completionError = new Error('Request timed out from chat proxy; retrying with alternate service if available.');
                  await new Promise(resolve => setTimeout(resolve, 350));
                  continue;
@@ -1615,11 +1619,11 @@ _install_httpx_proxy_patch()
              } catch (attemptError: any) {
                completionError = attemptError instanceof Error ? attemptError : new Error(String(attemptError));
                const isTimeoutError = /timed out|timeout/i.test(completionError.message || '');
-               if (attempt < 3 && isTimeoutError) {
+               if (attempt < maxAttempts && isTimeoutError) {
                  await new Promise(resolve => setTimeout(resolve, 350));
                  continue;
                }
-               if (attempt < 3 && !isTimeoutError) {
+               if (attempt < maxAttempts && !isTimeoutError) {
                  await new Promise(resolve => setTimeout(resolve, 350));
                  continue;
                }
@@ -2192,54 +2196,9 @@ async def _chat_wrapper():
         tool_result_cache = {}
         total_tool_calls = 0
         successful_tool_calls = 0
-        successful_tool_results = []
         timeout_finalize_requested = False
-        dataset_query_failures = 0
-        single_term_hint_added = False
-
-        def _short_text(value, max_len=400):
-          text = str(value)
-          if len(text) <= max_len:
-            return text
-          return text[:max_len] + "..."
-
-        def _try_parse_dict(tool_output):
-          if isinstance(tool_output, dict):
-            return tool_output
-          if not isinstance(tool_output, str):
-            return None
-          text = tool_output.strip()
-          if not text:
-            return None
-          try:
-            parsed = json.loads(text)
-            if isinstance(parsed, dict):
-              return parsed
-          except Exception:
-            pass
-          try:
-            import ast
-            parsed = ast.literal_eval(text)
-            if isinstance(parsed, dict):
-              return parsed
-          except Exception:
-            return None
-          return None
-
-        def _summarize_tool_results():
-          if not successful_tool_results:
-            return None
-
-          lines = ["I executed the available tool(s) and collected these results:"]
-          for index, item in enumerate(successful_tool_results[:5], start=1):
-            tool_name = item.get('name') or 'tool'
-            tool_output = item.get('output')
-            lines.append(f"{index}. {tool_name}: {_short_text(tool_output, 600)}")
-
-          if len(successful_tool_results) > 5:
-            lines.append(f"...and {len(successful_tool_results) - 5} more tool result(s).")
-
-          return "\n".join(lines)
+        tool_rounds = 0
+        latest_tool_output_text = None
 
         def _is_timeout_error_payload(payload):
           if isinstance(payload, dict):
@@ -2276,62 +2235,7 @@ async def _chat_wrapper():
             ])
           return False
 
-        def _ensure_latest_tool_call_responses(messages_payload):
-          if not isinstance(messages_payload, list) or not messages_payload:
-            return
-
-          assistant_index = None
-          expected_ids = []
-          for idx in range(len(messages_payload) - 1, -1, -1):
-            message = messages_payload[idx]
-            if not isinstance(message, dict) or message.get("role") != "assistant":
-              continue
-            tool_calls_in_message = message.get("tool_calls")
-            if not isinstance(tool_calls_in_message, list) or not tool_calls_in_message:
-              continue
-
-            ids = []
-            for tool_call in tool_calls_in_message:
-              if not isinstance(tool_call, dict):
-                continue
-              tool_call_id = tool_call.get("id")
-              if isinstance(tool_call_id, str) and tool_call_id.strip():
-                ids.append(tool_call_id)
-
-            if ids:
-              assistant_index = idx
-              expected_ids = ids
-              break
-
-          if assistant_index is None or not expected_ids:
-            return
-
-          seen_ids = set()
-          tool_scan_index = assistant_index + 1
-          while tool_scan_index < len(messages_payload):
-            candidate = messages_payload[tool_scan_index]
-            if not isinstance(candidate, dict):
-              tool_scan_index += 1
-              continue
-            if candidate.get("role") != "tool":
-              break
-            candidate_id = candidate.get("tool_call_id")
-            if isinstance(candidate_id, str):
-              seen_ids.add(candidate_id)
-            tool_scan_index += 1
-
-          missing_ids = [tool_call_id for tool_call_id in expected_ids if tool_call_id not in seen_ids]
-          for missing_id in missing_ids:
-            messages_payload.insert(tool_scan_index, {
-              "tool_call_id": missing_id,
-              "role": "tool",
-              "name": "tool",
-              "content": "Error: tool call response missing due runtime interruption.",
-            })
-            tool_scan_index += 1
-
         async def _call_follow_up(messages_payload, tools_payload, tool_choice_payload):
-          _ensure_latest_tool_call_responses(messages_payload)
           remaining_seconds = soft_deadline - asyncio.get_event_loop().time()
           model_lower = '${chatModel}'.strip().lower()
           slower_model = (
@@ -2339,7 +2243,11 @@ async def _chat_wrapper():
             or model_lower.startswith('gpt-5.')
             or model_lower == 'o3'
           )
-          max_followup_timeout = 32.0 if slower_model else 20.0
+          forcing_finalize = tool_choice_payload == "none"
+          if forcing_finalize:
+            max_followup_timeout = 18.0 if slower_model else 14.0
+          else:
+            max_followup_timeout = 24.0 if slower_model else 16.0
           timeout_seconds = min(max_followup_timeout, max(4.0, remaining_seconds + 1.0))
           try:
             return await asyncio.wait_for(
@@ -2354,15 +2262,38 @@ async def _chat_wrapper():
           except asyncio.TimeoutError:
             return json.dumps({"error": "request_timeout", "code": "request_timeout", "status": 408})
 
+        async def _force_model_final_response(system_instruction):
+          messages.append({
+            "role": "system",
+            "content": system_instruction,
+          })
+          forced_json = await _call_follow_up(messages, tools, "none")
+          try:
+            forced_result = json.loads(forced_json)
+            if isinstance(forced_result, dict) and "error" in forced_result:
+              return None
+            forced_message = forced_result['choices'][0]['message'] if isinstance(forced_result, dict) else {}
+            forced_content = forced_message.get('content') if isinstance(forced_message, dict) else None
+            if isinstance(forced_content, str) and forced_content.strip():
+              return forced_content
+          except Exception:
+            return None
+          return None
+
         while True:
           if asyncio.get_event_loop().time() >= hard_deadline:
-            summary_text = _summarize_tool_results()
-            if isinstance(summary_text, str) and summary_text:
+            forced_content = await _force_model_final_response(
+              "You have reached the hard response timeout. You MUST return a final user-facing answer now based on your reasoning and the collected tool outputs/errors. Do not call additional tools."
+            )
+            if isinstance(forced_content, str) and forced_content.strip():
+              send_response({"text": forced_content})
+              return
+            if isinstance(latest_tool_output_text, str) and latest_tool_output_text.strip():
               send_response({
-                "text": f"{summary_text}\n\nI’m returning the best results gathered so far.",
+                "text": f"Model finalization was unavailable. Returning the latest tool output:\n\n{latest_tool_output_text}",
               })
-            else:
-              send_response({"text": "I’m taking longer than expected, so I’m stopping here. Please try again."})
+              return
+            send_response({"text": "I’m taking longer than expected, so I’m stopping here. Please try again."})
             return
 
           tool_calls = response_message.get('tool_calls')
@@ -2374,30 +2305,18 @@ async def _chat_wrapper():
               return
 
             print("DEBUG: Empty assistant response; requesting forced final answer")
+            forced_empty_content = await _force_model_final_response(
+              "Your previous response was empty. You MUST return a final user-facing response now based on your reasoning and the tool outputs already collected. If results are weak, explain limitations and give best-effort guidance. Do not call additional tools."
+            )
+            if isinstance(forced_empty_content, str) and forced_empty_content.strip():
+              send_response({"text": forced_empty_content})
+              return
 
-            if successful_tool_results:
-              summary_text = _summarize_tool_results()
-              if isinstance(summary_text, str) and summary_text:
-                send_response({"text": f"{summary_text}\n\nI’m returning the best results gathered so far."})
-                return
-
-            messages.append({
-              "role": "system",
-              "content": "Your previous response was empty. You MUST return a final user-facing response now based on your reasoning and the tool outputs already collected. If results are weak, explain limitations and give best-effort guidance. Do not call additional tools.",
-            })
-
-            forced_empty_json = await _call_follow_up(messages, tools, "none")
-            try:
-              forced_empty_result = json.loads(forced_empty_json)
-              if isinstance(forced_empty_result, dict) and "error" in forced_empty_result:
-                raise RuntimeError(str(forced_empty_result.get("error")))
-              forced_empty_message = forced_empty_result['choices'][0]['message'] if isinstance(forced_empty_result, dict) else {}
-              forced_empty_content = forced_empty_message.get('content') if isinstance(forced_empty_message, dict) else None
-              if isinstance(forced_empty_content, str) and forced_empty_content.strip():
-                send_response({"text": forced_empty_content})
-                return
-            except Exception:
-              pass
+            if isinstance(latest_tool_output_text, str) and latest_tool_output_text.strip():
+              send_response({
+                "text": f"Model finalization was unavailable. Returning the latest tool output:\n\n{latest_tool_output_text}",
+              })
+              return
 
             send_response({"text": "I'm having trouble finishing this request right now. Please try again."})
             return
@@ -2407,6 +2326,7 @@ async def _chat_wrapper():
             return
 
           messages.append(response_message)
+          tool_rounds += 1
           tool_errors_this_turn = 0
           tool_success_this_turn = 0
 
@@ -2449,10 +2369,7 @@ async def _chat_wrapper():
                 function_response_text = str(function_response)
                 successful_tool_calls += 1
                 tool_success_this_turn += 1
-                successful_tool_results.append({
-                  "name": function_name,
-                  "output": function_response_text,
-                })
+                latest_tool_output_text = function_response_text
 
                 messages.append({
                   "tool_call_id": tool_call_id,
@@ -2463,18 +2380,6 @@ async def _chat_wrapper():
               except Exception as e:
                 error_text = str(e)
                 tool_errors_this_turn += 1
-                if function_name == "search_datasets":
-                  dataset_query_failures += 1
-                  if dataset_query_failures >= 2 and not single_term_hint_added:
-                    messages.append({
-                      "role": "system",
-                      "content": "Dataset queries have repeatedly failed. Simplify now to single-term fallback queries likely present in the beta index (for example: mouse, tumor, cancer, neuroblastoma). Make up to four fallback calls, then provide the best possible final answer and explicitly mention beta index limitations.",
-                    })
-                    single_term_hint_added = True
-                successful_tool_results.append({
-                  "name": function_name,
-                  "output": f"Error: {error_text}",
-                })
                 messages.append({
                   "tool_call_id": tool_call_id,
                   "role": "tool",
@@ -2490,13 +2395,12 @@ async def _chat_wrapper():
                 "content": f"Error: Tool '{function_name}' is not available.",
               })
 
-          if dataset_query_failures >= 2 and tool_success_this_turn == 0 and tool_errors_this_turn > 0:
-            summary_text = _summarize_tool_results()
-            if isinstance(summary_text, str) and summary_text:
-              send_response({
-                "text": f"{summary_text}\n\nI could not find exact matches for the original request. The BioImage Archive API is currently in beta and appears limited/intermittent. I used simplified fallback queries and returned the best available results/errors.",
-              })
-              return
+          if tool_rounds >= 3 and total_tool_calls > 0 and not timeout_finalize_requested:
+            timeout_finalize_requested = True
+            messages.append({
+              "role": "system",
+              "content": "You have already executed multiple tool rounds. Return a final user-facing answer now based on collected tool outputs/errors. Do not call additional tools.",
+            })
 
           if asyncio.get_event_loop().time() >= soft_deadline and not timeout_finalize_requested:
             timeout_finalize_requested = True
@@ -2505,12 +2409,12 @@ async def _chat_wrapper():
               "content": f"You are near the response timeout ({int(soft_timeout_ms / 1000)}s). You MUST return a final user-facing answer now based on your reasoning and the collected tool outputs/errors. Do not call additional tools.",
             })
 
-          if timeout_finalize_requested and successful_tool_results and turns >= 3:
-            summary_text = _summarize_tool_results()
-            if isinstance(summary_text, str) and summary_text:
-              send_response({
-                "text": f"{summary_text}\n\nI’m returning the best results gathered so far.",
-              })
+          if timeout_finalize_requested and turns >= 3:
+            forced_content = await _force_model_final_response(
+              "You are out of time. You MUST return a final user-facing answer now using your reasoning and the collected tool outputs/errors. Do not call additional tools."
+            )
+            if isinstance(forced_content, str) and forced_content.strip():
+              send_response({"text": forced_content})
               return
 
           turns += 1
@@ -2521,43 +2425,33 @@ async def _chat_wrapper():
           try:
             next_result = json.loads(next_result_json)
           except Exception as parse_err:
-            if successful_tool_results:
-              summary_text = _summarize_tool_results()
-              if isinstance(summary_text, str) and summary_text:
-                send_response({"text": f"{summary_text}\n\nI’m returning the best available results/errors so far."})
-                return
+            forced_content = await _force_model_final_response(
+              "The previous response could not be parsed. You MUST return a final user-facing answer now based on your reasoning and collected tool outputs/errors. Do not call additional tools."
+            )
+            if isinstance(forced_content, str) and forced_content.strip():
+              send_response({"text": forced_content})
+              return
+            if isinstance(latest_tool_output_text, str) and latest_tool_output_text.strip():
+              send_response({
+                "text": f"Model finalization was unavailable. Returning the latest tool output:\n\n{latest_tool_output_text}",
+              })
+              return
             send_response({"text": "I’m having trouble finishing this request right now. Please try again."})
             return
 
           if isinstance(next_result, dict) and "error" in next_result:
             if _is_timeout_error_payload(next_result) and not timeout_finalize_requested and total_tool_calls > 0:
-              if successful_tool_results:
-                summary_text = _summarize_tool_results()
-                if isinstance(summary_text, str) and summary_text:
-                  send_response({"text": f"{summary_text}\n\nI’m returning the best available results/errors so far."})
-                  return
               timeout_finalize_requested = True
-              messages.append({
-                "role": "system",
-                "content": "The previous model call timed out. You MUST return a final user-facing answer now using your reasoning and the tool outputs already collected. Do not call additional tools.",
-              })
-              forced_result_json = await _call_follow_up(messages, tools, "none")
-              try:
-                forced_result = json.loads(forced_result_json)
-                if isinstance(forced_result, dict) and "error" in forced_result:
-                  raise RuntimeError(str(forced_result.get("error")))
-                forced_message = forced_result['choices'][0]['message'] if isinstance(forced_result, dict) else {}
-                forced_content = forced_message.get('content') if isinstance(forced_message, dict) else None
-                if isinstance(forced_content, str) and forced_content.strip():
-                  send_response({"text": forced_content})
-                  return
-              except Exception:
-                pass
-
-            if successful_tool_results:
-              summary_text = _summarize_tool_results()
-              if isinstance(summary_text, str) and summary_text:
-                send_response({"text": f"{summary_text}\n\nI’m returning the best available results/errors so far."})
+              forced_content = await _force_model_final_response(
+                "The previous model call timed out. You MUST return a final user-facing answer now using your reasoning and the tool outputs already collected. Do not call additional tools."
+              )
+              if isinstance(forced_content, str) and forced_content.strip():
+                send_response({"text": forced_content})
+                return
+              if isinstance(latest_tool_output_text, str) and latest_tool_output_text.strip():
+                send_response({
+                  "text": f"Model finalization was unavailable. Returning the latest tool output:\n\n{latest_tool_output_text}",
+                })
                 return
             send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
             return

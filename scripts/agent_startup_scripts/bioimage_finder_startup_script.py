@@ -61,7 +61,9 @@ def _query_terms(query: str) -> List[str]:
 
 def _dataset_relevance_score(item: Dict[str, Any], query_terms: List[str]) -> float:
     title = item.get("title") if isinstance(item.get("title"), str) else ""
-    description = item.get("description") if isinstance(item.get("description"), str) else ""
+    description = (
+        item.get("description") if isinstance(item.get("description"), str) else ""
+    )
     accession = item.get("accession") if isinstance(item.get("accession"), str) else ""
 
     title_lower = title.lower()
@@ -101,7 +103,9 @@ def _dataset_relevance_score(item: Dict[str, Any], query_terms: List[str]) -> fl
     return score
 
 
-def _rerank_dataset_results(items: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+def _rerank_dataset_results(
+    items: List[Dict[str, Any]], query: str
+) -> List[Dict[str, Any]]:
     terms = _query_terms(query)
     if not terms:
         return items
@@ -268,10 +272,16 @@ def _compact_dataset_result(item: Dict[str, Any]) -> Dict[str, Any]:
     score = score_value if isinstance(score_value, (int, float)) else None
     compact: Dict[str, Any] = {
         "title": _short_text(item.get("title", "Untitled"), 180),
-        "accession": item.get("accession") if isinstance(item.get("accession"), str) else "",
+        "accession": (
+            item.get("accession") if isinstance(item.get("accession"), str) else ""
+        ),
         "url": item.get("url") if isinstance(item.get("url"), str) else None,
         "doi": item.get("doi") if isinstance(item.get("doi"), str) else None,
-        "release_date": item.get("release_date") if isinstance(item.get("release_date"), str) else None,
+        "release_date": (
+            item.get("release_date")
+            if isinstance(item.get("release_date"), str)
+            else None
+        ),
         "score": score,
     }
     return compact
@@ -359,14 +369,24 @@ def _compact_image_result(item: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "title": _short_text(item.get("title", "Untitled"), 180),
         "id": item.get("id") if isinstance(item.get("id"), str) else "",
-        "accession": item.get("accession") if isinstance(item.get("accession"), str) else "",
-        "study_url": item.get("study_url") if isinstance(item.get("study_url"), str) else None,
-        "file_pattern": item.get("file_pattern") if isinstance(item.get("file_pattern"), str) else None,
+        "accession": (
+            item.get("accession") if isinstance(item.get("accession"), str) else ""
+        ),
+        "study_url": (
+            item.get("study_url") if isinstance(item.get("study_url"), str) else None
+        ),
+        "file_pattern": (
+            item.get("file_pattern")
+            if isinstance(item.get("file_pattern"), str)
+            else None
+        ),
         "score": score,
     }
 
 
-def _format_dataset_assistant_summary(payload: Dict[str, Any], max_items: int = 5) -> str:
+def _format_dataset_assistant_summary(
+    payload: Dict[str, Any], max_items: int = 5
+) -> str:
     results = payload.get("results")
     result_list = results if isinstance(results, list) else []
     if not result_list:
@@ -380,8 +400,12 @@ def _format_dataset_assistant_summary(payload: Dict[str, Any], max_items: int = 
     for idx, entry in enumerate(result_list[:max_items], start=1):
         if not isinstance(entry, dict):
             continue
-        title = entry.get("title") if isinstance(entry.get("title"), str) else "Untitled"
-        accession = entry.get("accession") if isinstance(entry.get("accession"), str) else ""
+        title = (
+            entry.get("title") if isinstance(entry.get("title"), str) else "Untitled"
+        )
+        accession = (
+            entry.get("accession") if isinstance(entry.get("accession"), str) else ""
+        )
         url = entry.get("url") if isinstance(entry.get("url"), str) else None
         score = entry.get("score")
         score_part = f" (score {score:.2f})" if isinstance(score, (int, float)) else ""
@@ -398,7 +422,9 @@ def _format_dataset_assistant_summary(payload: Dict[str, Any], max_items: int = 
     if isinstance(total, int):
         lines.append(f"(Total hits reported by API: {total})")
     lines.append("")
-    lines.append("Note: BioImage Archive beta search can be incomplete or intermittent.")
+    lines.append(
+        "Note: BioImage Archive beta search can be incomplete or intermittent."
+    )
     return "\n".join(lines)
 
 
@@ -476,7 +502,7 @@ async def _search_via_proxy(kind: str, query: str, limit: int) -> Dict[str, Any]
 def _fallback_terms_from_query(query: str) -> List[str]:
     terms: List[str] = []
     for part in re.split(r"\bAND\b|\bOR\b", query, flags=re.IGNORECASE):
-        candidate = part.strip().strip('"\'()[]{}')
+        candidate = part.strip().strip("\"'()[]{}")
         if len(candidate) < 2:
             continue
         if candidate.lower() in {"and", "or", "not"}:
@@ -541,7 +567,10 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
     safe_limit = max(1, int(limit))
     print(f"DEBUG: search_datasets primary query='{query}' limit={safe_limit}")
     primary_result = await _search_datasets_once(query, safe_limit)
-    if isinstance(primary_result.get("total"), int) and primary_result.get("total", 0) > 0:
+    if (
+        isinstance(primary_result.get("total"), int)
+        and primary_result.get("total", 0) > 0
+    ):
         primary_items = primary_result.get("results")
         primary_list = primary_items if isinstance(primary_items, list) else []
         print(
@@ -557,7 +586,9 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
                 enrichment_list = (
                     enrichment_items if isinstance(enrichment_items, list) else []
                 )
-                merged_results = _merge_unique_dataset_results(primary_list, enrichment_list)
+                merged_results = _merge_unique_dataset_results(
+                    primary_list, enrichment_list
+                )
                 reranked = _rerank_dataset_results(merged_results, query)
                 primary_result["results"] = reranked[: min(8, safe_limit)]
                 if _has_strong_match(primary_result["results"], query):
@@ -577,7 +608,9 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
             fallback_items = fallback_result.get("results")
             fallback_list = fallback_items if isinstance(fallback_items, list) else []
             if fallback_list:
-                merged_results = _merge_unique_dataset_results(merged_results, fallback_list)
+                merged_results = _merge_unique_dataset_results(
+                    merged_results, fallback_list
+                )
                 fallback_terms_used.append(term)
                 print(
                     f"DEBUG: search_datasets fallback query returned total={fallback_result.get('total', 0)}"
