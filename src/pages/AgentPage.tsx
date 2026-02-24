@@ -923,7 +923,9 @@ const AgentPage: React.FC = () => {
                    _rkwargs: true
                  });
                
-               const mappedAgents: Agent[] = initialAgents.map((art: any) => ({
+                 const limitedAgents = initialAgents.filter((art: any) => art.id === defaultAgentId);
+
+                 const mappedAgents: Agent[] = limitedAgents.map((art: any) => ({
                    id: art.id,
                    name: art.manifest?.name || art.alias || 'Unnamed Agent',
                    description: art.manifest?.description || 'No description provided.',
@@ -1689,7 +1691,9 @@ _install_httpx_proxy_patch()
         console.log("AgentPage: Agents found:", initialAgents);
 
         // We assume all found agents are "online" (available to start via proxy)
-        const mappedAgents: Agent[] = initialAgents.map((art: any) => {
+        const limitedAgents = initialAgents.filter((art: any) => art.id === defaultAgentId);
+
+        const mappedAgents: Agent[] = limitedAgents.map((art: any) => {
           const serviceId = art.alias ? `hypha-agents/${art.alias}` : undefined;
           
           return {
