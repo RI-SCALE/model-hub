@@ -28,6 +28,11 @@ interface SessionInputDraftCache {
   [sessionKey: string]: string;
 }
 
+interface UiEventEntry {
+  timestamp: string;
+  message: string;
+}
+
 const MAX_COLLAPSED_MESSAGE_CHARS = 1200;
 const MAX_COLLAPSED_MESSAGE_LINES = 16;
 const MAX_PROGRESS_TRACE_DETAILS = 30;
@@ -68,8 +73,8 @@ const CHAT_PROXY_REQUEST_TIMEOUT_MS = 900_000;
 const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 60_000;
 const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 900_000;
 const AGENT_TOOL_EXECUTION_LIMIT = 50;
-const AGENT_ITERATION_SOFT_TIMEOUT_MS = 90_000;
-const AGENT_ITERATION_HARD_TIMEOUT_MS = 120_000;
+const AGENT_ITERATION_SOFT_TIMEOUT_MS = 60_000;
+const AGENT_ITERATION_HARD_TIMEOUT_MS = 80_000;
 
 const slugifyBranchName = (branchName: string): string => {
   const normalized = branchName
@@ -107,6 +112,30 @@ const normalizeBranchRefName = (value: string): string => {
   return trimmed;
 };
 
+const deriveAgentInstructionPrompt = (rawPrompt: string): string => {
+  const trimmed = rawPrompt.trim();
+  if (!trimmed) return '';
+
+  const looksLikeCode = /\bimport\s+\w+|\bdef\s+\w+\(|\basync\s+def\s+\w+\(|\n\s*print\(/.test(trimmed);
+  if (!looksLikeCode) {
+    return trimmed;
+  }
+
+  const printTripleQuoteMatch = trimmed.match(/print\(\s*"""([\s\S]*?)"""\s*\)/m);
+  if (printTripleQuoteMatch && printTripleQuoteMatch[1]) {
+    const extracted = printTripleQuoteMatch[1].trim();
+    if (extracted) return extracted;
+  }
+
+  const youAreIndex = trimmed.lastIndexOf('You are ');
+  if (youAreIndex >= 0) {
+    const extracted = trimmed.slice(youAreIndex).trim();
+    if (extracted) return extracted;
+  }
+
+  return trimmed.slice(0, 3000).trim();
+};
+
 const uniqueNonEmptyValues = (values: Array<string | undefined | null>): string[] => {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -117,6 +146,13 @@ const uniqueNonEmptyValues = (values: Array<string | undefined | null>): string[
     result.push(cleaned);
   }
   return result;
+};
+
+const escapeForPythonSingleQuotedString = (value: string): string => {
+  const backslash = String.fromCharCode(92);
+  return value
+    .replaceAll(backslash, `${backslash}${backslash}`)
+    .replaceAll("'", `${backslash}'`);
 };
 
 const getChatProxyServiceIds = (): string[] => {
@@ -264,6 +300,7 @@ const AgentPage: React.FC = () => {
   const [agentReady, setAgentReady] = useState(false);
   const [agentProgress, setAgentProgress] = useState<string | null>(null);
   const [agentProgressDetails, setAgentProgressDetails] = useState<string[]>([]);
+  const [uiEvents, setUiEvents] = useState<UiEventEntry[]>([]);
   const [showAgentProgressDetails, setShowAgentProgressDetails] = useState(false);
   const [typingSessionKey, setTypingSessionKey] = useState<string | null>(null);
   const [expandedMessageIds, setExpandedMessageIds] = useState<Record<string, boolean>>({});
@@ -1029,10 +1066,10 @@ const AgentPage: React.FC = () => {
 
         if (packages.length > 0) {
             const packagesJson = JSON.stringify(packages);
-            const chatProxyServiceIdsLiteral = JSON.stringify(CHAT_PROXY_SERVICE_IDS)
-              .replaceAll('\\', '\\\\')
-              .replaceAll("'", "\\'");
-            const installCode = `
+            const chatProxyServiceIdsLiteral = escapeForPythonSingleQuotedString(
+              JSON.stringify(CHAT_PROXY_SERVICE_IDS)
+            );
+            const installCode = String.raw`
 import micropip
 import json
 import traceback
@@ -1303,7 +1340,21 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
     if tool_choice is not None:
       print(f"TRACE: proxy tool_choice => {json.dumps(tool_choice, ensure_ascii=False)}")
 
+    fallback_model = '${DEFAULT_CHAT_MODEL}'
     result = await _python_fallback_chat_completion(messages, tools, tool_choice, model)
+
+    if (
+      isinstance(result, dict)
+      and "error" in result
+      and isinstance(model, str)
+      and model.strip()
+      and model.strip() != fallback_model
+    ):
+      print(f"DEBUG: Model {model} returned error payload; retrying once with fallback model {fallback_model}")
+      fallback_result = await _python_fallback_chat_completion(messages, tools, tool_choice, fallback_model)
+      if not (isinstance(fallback_result, dict) and "error" in fallback_result):
+        result = fallback_result
+
     print(f"TRACE: proxy response => {json.dumps(result, ensure_ascii=False)}")
     return json.dumps(result)
   except asyncio.TimeoutError:
@@ -1750,6 +1801,11 @@ _install_httpx_proxy_patch()
     };
   };
 
+  const appendUiEvent = (message: string) => {
+    const timestamp = new Date().toISOString();
+    setUiEvents(prev => [...prev, { timestamp, message }].slice(-100));
+  };
+
   const parseProgressFromStdout = (rawContent: string) => {
     const lines = rawContent
       .split('\n')
@@ -1783,6 +1839,11 @@ _install_httpx_proxy_patch()
       }
       if (line.startsWith('DEBUG: Exception in hypha_chat_proxy bridge:')) {
         updateAgentProgress('Chat proxy bridge exception.', line);
+        continue;
+      }
+      if (line.includes('DEBUG: Empty assistant response; requesting forced final answer')) {
+        updateAgentProgress('Finishing response after empty model output...', line);
+        continue;
       }
     }
   };
@@ -1856,7 +1917,10 @@ _install_httpx_proxy_patch()
           .map(m => ({ role: m.role, content: m.content }));
 
         if (agentSystemPrompt) {
-          history.unshift({ role: 'system', content: agentSystemPrompt });
+          const condensedAgentPrompt = deriveAgentInstructionPrompt(agentSystemPrompt);
+          if (condensedAgentPrompt) {
+            history.unshift({ role: 'system', content: condensedAgentPrompt });
+          }
         }
 
       history.unshift({
@@ -1908,7 +1972,7 @@ _install_httpx_proxy_patch()
       }
       
       const historyJsonBase64 = toBase64Utf8(JSON.stringify(history));
-      const chatModel = (agentChatModel || DEFAULT_CHAT_MODEL).replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+      const chatModel = escapeForPythonSingleQuotedString(agentChatModel || DEFAULT_CHAT_MODEL);
 
         const runChatExecution = async (): Promise<string> => {
           return await new Promise<string>(async (resolve, reject) => {
@@ -1946,7 +2010,7 @@ _install_httpx_proxy_patch()
               );
             }, CHAT_PROXY_REQUEST_TIMEOUT_MS);
 
-            const code = `
+            const code = String.raw`
 import asyncio
 import js
 import json
@@ -2061,8 +2125,58 @@ async def _chat_wrapper():
           return
         
         if isinstance(result, dict) and "error" in result:
-             send_response({"text": "I’m having trouble reaching the chat backend right now. Please try again in a moment."})
-             return
+             error_text = str(result.get("error", "")).lower()
+             is_timeout_like = any(token in error_text for token in [
+               "timeout",
+               "timed out",
+               "gateway timeout",
+               "request_timeout",
+               "bridge-timeout",
+               "deadline exceeded",
+             ])
+
+             if is_timeout_like:
+               condensed_messages = []
+               for msg in messages:
+                 if isinstance(msg, dict) and msg.get("role") == "system":
+                   condensed_messages.append(msg)
+
+               last_user = None
+               for msg in reversed(messages):
+                 if isinstance(msg, dict) and msg.get("role") == "user":
+                   maybe_content = msg.get("content")
+                   if isinstance(maybe_content, str) and maybe_content.strip():
+                     last_user = {"role": "user", "content": maybe_content.strip()}
+                     break
+
+               if isinstance(last_user, dict):
+                 condensed_messages.append(last_user)
+
+               if condensed_messages:
+                 print("DEBUG: Initial model call timed out; retrying once with condensed context")
+                 condensed_result_json = await hypha_chat_proxy(
+                     json.dumps(condensed_messages),
+                     tools_json,
+                     tool_choice_json,
+                   '${chatModel}'
+                 )
+                 print(f"DEBUG: condensed retry hypha_chat_proxy returned: {condensed_result_json[:100]}...")
+                 try:
+                   condensed_result = json.loads(condensed_result_json)
+                 except Exception:
+                   condensed_result = None
+
+                 if isinstance(condensed_result, dict) and "error" not in condensed_result:
+                   result = condensed_result
+                 else:
+                   send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
+                   return
+               else:
+                 send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
+                 return
+             else:
+               send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
+               return
 
         choice = result['choices'][0]
         response_message = choice['message']
@@ -2132,7 +2246,7 @@ async def _chat_wrapper():
           if len(successful_tool_results) > 5:
             lines.append(f"...and {len(successful_tool_results) - 5} more tool result(s).")
 
-          return "\\n".join(lines)
+          return "\n".join(lines)
 
         def _is_timeout_error_payload(payload):
           if isinstance(payload, dict):
@@ -2226,7 +2340,14 @@ async def _chat_wrapper():
         async def _call_follow_up(messages_payload, tools_payload, tool_choice_payload):
           _ensure_latest_tool_call_responses(messages_payload)
           remaining_seconds = soft_deadline - asyncio.get_event_loop().time()
-          timeout_seconds = min(35.0, max(5.0, remaining_seconds + 2.0))
+          model_lower = '${chatModel}'.strip().lower()
+          slower_model = (
+            model_lower == 'gpt-5'
+            or model_lower.startswith('gpt-5.')
+            or model_lower == 'o3'
+          )
+          max_followup_timeout = 32.0 if slower_model else 20.0
+          timeout_seconds = min(max_followup_timeout, max(4.0, remaining_seconds + 1.0))
           try:
             return await asyncio.wait_for(
               hypha_chat_proxy(
@@ -2245,7 +2366,7 @@ async def _chat_wrapper():
             summary_text = _summarize_tool_results()
             if isinstance(summary_text, str) and summary_text:
               send_response({
-                "text": f"{summary_text}\\n\\nI’m returning the best results gathered so far.",
+                "text": f"{summary_text}\n\nI’m returning the best results gathered so far.",
               })
             else:
               send_response({"text": "I’m taking longer than expected, so I’m stopping here. Please try again."})
@@ -2255,7 +2376,37 @@ async def _chat_wrapper():
           content = response_message.get('content')
 
           if not tool_calls:
-            send_response({"text": content})
+            if isinstance(content, str) and content.strip():
+              send_response({"text": content})
+              return
+
+            print("DEBUG: Empty assistant response; requesting forced final answer")
+
+            if successful_tool_results:
+              summary_text = _summarize_tool_results()
+              if isinstance(summary_text, str) and summary_text:
+                send_response({"text": f"{summary_text}\n\nI’m returning the best results gathered so far."})
+                return
+
+            messages.append({
+              "role": "system",
+              "content": "Your previous response was empty. Provide a concise final answer now. If no results were found, explain that clearly and suggest one or two nearby search terms. Do not call additional tools.",
+            })
+
+            forced_empty_json = await _call_follow_up(messages, tools, "none")
+            try:
+              forced_empty_result = json.loads(forced_empty_json)
+              if isinstance(forced_empty_result, dict) and "error" in forced_empty_result:
+                raise RuntimeError(str(forced_empty_result.get("error")))
+              forced_empty_message = forced_empty_result['choices'][0]['message'] if isinstance(forced_empty_result, dict) else {}
+              forced_empty_content = forced_empty_message.get('content') if isinstance(forced_empty_message, dict) else None
+              if isinstance(forced_empty_content, str) and forced_empty_content.strip():
+                send_response({"text": forced_empty_content})
+                return
+            except Exception:
+              pass
+
+            send_response({"text": "I'm having trouble finishing this request right now. Please try again."})
             return
 
           if turns >= max_turns:
@@ -2324,7 +2475,7 @@ async def _chat_wrapper():
                   if dataset_query_failures >= 2 and not single_term_hint_added:
                     messages.append({
                       "role": "system",
-                      "content": "Dataset queries have repeatedly failed. Simplify now to single-term fallback queries likely present in the beta index (for example: tumor, mouse, cancer). Make at most two fallback calls, then provide the best possible final answer and explicitly mention beta index limitations.",
+                      "content": "Dataset queries have repeatedly failed. Simplify now to single-term fallback queries likely present in the beta index (for example: mouse, tumor, cancer, neuroblastoma). Make up to four fallback calls, then provide the best possible final answer and explicitly mention beta index limitations.",
                     })
                     single_term_hint_added = True
                 successful_tool_results.append({
@@ -2350,7 +2501,7 @@ async def _chat_wrapper():
             summary_text = _summarize_tool_results()
             if isinstance(summary_text, str) and summary_text:
               send_response({
-                "text": f"{summary_text}\\n\\nI could not find exact matches for the original request. The BioImage Archive API is currently in beta and appears limited/intermittent. I used simplified fallback queries and returned the best available results/errors.",
+                "text": f"{summary_text}\n\nI could not find exact matches for the original request. The BioImage Archive API is currently in beta and appears limited/intermittent. I used simplified fallback queries and returned the best available results/errors.",
               })
               return
 
@@ -2365,7 +2516,7 @@ async def _chat_wrapper():
             summary_text = _summarize_tool_results()
             if isinstance(summary_text, str) and summary_text:
               send_response({
-                "text": f"{summary_text}\\n\\nI’m returning the best results gathered so far.",
+                "text": f"{summary_text}\n\nI’m returning the best results gathered so far.",
               })
               return
 
@@ -2380,13 +2531,18 @@ async def _chat_wrapper():
             if successful_tool_results:
               summary_text = _summarize_tool_results()
               if isinstance(summary_text, str) and summary_text:
-                send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far due to a temporary backend issue."})
+                send_response({"text": f"{summary_text}\n\nI’m returning the best available results/errors so far."})
                 return
             send_response({"text": "I’m having trouble finishing this request right now. Please try again."})
             return
 
           if isinstance(next_result, dict) and "error" in next_result:
             if _is_timeout_error_payload(next_result) and not timeout_finalize_requested and total_tool_calls > 0:
+              if successful_tool_results:
+                summary_text = _summarize_tool_results()
+                if isinstance(summary_text, str) and summary_text:
+                  send_response({"text": f"{summary_text}\n\nI’m returning the best available results/errors so far."})
+                  return
               timeout_finalize_requested = True
               messages.append({
                 "role": "system",
@@ -2408,7 +2564,7 @@ async def _chat_wrapper():
             if successful_tool_results:
               summary_text = _summarize_tool_results()
               if isinstance(summary_text, str) and summary_text:
-                send_response({"text": f"{summary_text}\\n\\nI’m returning the best results gathered so far due to a temporary backend issue."})
+                send_response({"text": f"{summary_text}\n\nI’m returning the best available results/errors so far."})
                 return
             send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
             return
@@ -2416,7 +2572,7 @@ async def _chat_wrapper():
           response_message = next_result['choices'][0]['message']
 
     except Exception as e:
-        traceback.print_exc()
+      traceback.print_exc()
       send_response({"text": "I hit a temporary runtime issue while preparing the response. Please try again."})
 
 await _chat_wrapper()
@@ -3011,7 +3167,8 @@ await _chat_wrapper()
                           ];
 
                           const kernelLogLines = kernelExecutionLog.map((log) => `[${log.type}]${log.content}`);
-                          const combinedCopyLines = [...kernelLogLines, ...persistedProgressLines, ...liveProgressLines];
+                          const uiEventLines = uiEvents.map((entry) => `[ui] ${entry.timestamp} ${entry.message}`);
+                          const combinedCopyLines = [...kernelLogLines, ...uiEventLines, ...persistedProgressLines, ...liveProgressLines];
 
                           return (
                             <>
@@ -3044,6 +3201,17 @@ await _chat_wrapper()
                             {log.content}
                             </div>
                         ))}
+                        {uiEvents.length > 0 && (
+                          <>
+                            <div className="font-bold border-b border-gray-700 pb-2 mt-3 mb-2 text-gray-400">UI EVENTS</div>
+                            {uiEvents.map((entry, idx) => (
+                              <div key={`ui-event-${idx}-${entry.timestamp}`} className="mb-1 break-all text-cyan-200">
+                                <span className="opacity-50 mr-2">[ui]</span>
+                                {entry.timestamp} {entry.message}
+                              </div>
+                            ))}
+                          </>
+                        )}
                         {(persistedProgressLines.length > 0 || liveProgressLines.length > 0) && (
                           <>
                             <div className="font-bold border-b border-gray-700 pb-2 mt-3 mb-2 text-gray-400">MESSAGE PROGRESS TRACE</div>
@@ -3087,7 +3255,16 @@ await _chat_wrapper()
                 <select
                   id="chat-model-select"
                   value={agentChatModel}
-                  onChange={(e) => setAgentChatModel(e.target.value)}
+                  onChange={(e) => {
+                    const nextModel = e.target.value;
+                    const previousModel = agentChatModel;
+                    setAgentChatModel(nextModel);
+                    if (previousModel !== nextModel) {
+                      const eventText = `Model switched: ${previousModel} -> ${nextModel}`;
+                      console.info(eventText);
+                      appendUiEvent(eventText);
+                    }
+                  }}
                   className="text-xs border border-gray-300 rounded-md px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-ri-orange"
                 >
                   {CHAT_MODEL_OPTIONS.map((option) => (

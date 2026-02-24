@@ -32,6 +32,13 @@ async function waitForCompletedAssistantMessage(page: Page, beforeAssistantCount
   throw new Error('Timed out waiting for assistant response completion');
 }
 
+async function selectModel(page: Page, modelValue: string) {
+  const select = page.locator('#chat-model-select');
+  await expect(select).toBeVisible({ timeout: CHAT_READY_TIMEOUT });
+  await select.selectOption(modelValue);
+  await expect(select).toHaveValue(modelValue);
+}
+
 test.describe('BioImage Finder mouse-tumor regression', () => {
   test('does not emit archive bridge/to_py kernel errors', async ({ page }) => {
     test.skip(!process.env.RUN_REAL_PROXY_REPRO, 'Set RUN_REAL_PROXY_REPRO=1 to run against real proxy/kernel flow.');
@@ -83,4 +90,39 @@ test.describe('BioImage Finder mouse-tumor regression', () => {
       expect(assistantText).toMatch(/tumor|mouse|cancer/i);
     }
   });
+
+  for (const modelValue of ['gpt-5-mini', 'gpt-5']) {
+    test(`should return live datasets for mouse tumor prompt (${modelValue}, real flow)`, async ({ page }) => {
+      test.skip(!process.env.RUN_REAL_PROXY_REPRO, 'Set RUN_REAL_PROXY_REPRO=1 to run against real proxy/kernel flow.');
+      test.skip(!process.env.RUN_REAL_PROXY_MODEL_MATRIX, 'Set RUN_REAL_PROXY_MODEL_MATRIX=1 to run model-matrix real-proxy checks.');
+      test.setTimeout(480_000);
+
+      const input = await openAgentChat(page);
+      await page.evaluate(() => {
+        (globalThis as any).__chatProxyTestMode = undefined;
+      });
+      await selectModel(page, modelValue);
+
+      const assistantHeaders = page.locator('span.text-xs.font-semibold');
+      const beforeAssistantCount = await assistantHeaders.count();
+
+      await input.fill(PROMPT);
+      await input.press('Enter');
+
+      const assistantMessage = await waitForCompletedAssistantMessage(page, beforeAssistantCount);
+      const assistantText = ((await assistantMessage.innerText()) || '').toLowerCase();
+
+      expect(assistantText).not.toMatch(/archive search bridge is currently unavailable|archive bridge is currently unavailable|search service is currently unavailable/);
+      expect(assistantText).toMatch(/s-biad\d+|bioimage-archive\/[a-z0-9-]+|api is currently in beta|beta and appears limited|best available results\/errors/i);
+      if (!/s-biad\d+|bioimage-archive\/[a-z0-9-]+/i.test(assistantText)) {
+        expect(assistantText).toMatch(/tumor|mouse|cancer|neuroblastoma/i);
+      }
+
+      await page.getByRole('button', { name: 'Toggle Logs' }).click();
+      const logsText = (await page.locator('div.w-80.bg-gray-900').innerText().catch(() => '')).toLowerCase();
+      if (modelValue !== 'gpt-5-mini') {
+        expect(logsText).toContain(`model switched: gpt-5-mini -> ${modelValue}`);
+      }
+    });
+  }
 });

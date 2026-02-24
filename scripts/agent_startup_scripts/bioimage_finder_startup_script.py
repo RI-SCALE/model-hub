@@ -13,6 +13,28 @@ except Exception:
 
 BASE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts"
 BASE_IMAGE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts/image"
+STOPWORDS = {
+    "and",
+    "or",
+    "not",
+    "the",
+    "a",
+    "an",
+    "of",
+    "for",
+    "with",
+    "in",
+    "on",
+    "to",
+    "please",
+    "give",
+    "me",
+    "find",
+    "show",
+    "get",
+    "dataset",
+    "datasets",
+}
 
 
 def _short_text(value: Any, max_len: int = 180) -> str:
@@ -23,6 +45,110 @@ def _short_text(value: Any, max_len: int = 180) -> str:
 def _build_url(base_url: str, query: str) -> str:
     encoded = quote(query, safe='"()[]{}:*?+-/\\')
     return f"{base_url}?query={encoded}"
+
+
+def _query_terms(query: str) -> List[str]:
+    terms: List[str] = []
+    for token in re.findall(r"[A-Za-z0-9]+", query.lower()):
+        if len(token) < 3:
+            continue
+        if token in STOPWORDS:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms
+
+
+def _dataset_relevance_score(item: Dict[str, Any], query_terms: List[str]) -> float:
+    title = item.get("title") if isinstance(item.get("title"), str) else ""
+    description = item.get("description") if isinstance(item.get("description"), str) else ""
+    accession = item.get("accession") if isinstance(item.get("accession"), str) else ""
+
+    title_lower = title.lower()
+    description_lower = description.lower()
+    accession_lower = accession.lower()
+
+    score = 0.0
+    term_hits = 0
+    for term in query_terms:
+        term_re = re.compile(rf"\\b{re.escape(term)}\\b", re.IGNORECASE)
+        in_title = bool(term_re.search(title_lower))
+        in_desc = bool(term_re.search(description_lower))
+        if in_title:
+            score += 6.0
+            term_hits += 1
+        elif term in title_lower:
+            score += 3.5
+            term_hits += 1
+
+        if in_desc:
+            score += 3.0
+            term_hits += 1
+        elif term in description_lower:
+            score += 1.0
+            term_hits += 1
+
+        if term in accession_lower:
+            score += 0.5
+
+    if query_terms and term_hits >= max(2, len(query_terms)):
+        score += 2.0
+
+    api_score = item.get("score")
+    if isinstance(api_score, (int, float)):
+        score += min(float(api_score), 20.0) / 20.0
+
+    return score
+
+
+def _rerank_dataset_results(items: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+    terms = _query_terms(query)
+    if not terms:
+        return items
+    ranked: List[tuple[float, Dict[str, Any]]] = []
+    for item in items:
+        ranked.append((_dataset_relevance_score(item, terms), item))
+    ranked.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in ranked]
+
+
+def _has_strong_match(items: List[Dict[str, Any]], query: str) -> bool:
+    terms = _query_terms(query)
+    if not terms:
+        return True
+    for item in items:
+        if _dataset_relevance_score(item, terms) >= 6.0:
+            return True
+    return False
+
+
+def _merge_unique_dataset_results(
+    primary: List[Dict[str, Any]],
+    secondary: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _result_key(entry: Dict[str, Any]) -> str:
+        accession = entry.get("accession")
+        if isinstance(accession, str) and accession.strip():
+            return f"acc:{accession.strip().lower()}"
+        url = entry.get("url")
+        if isinstance(url, str) and url.strip():
+            return f"url:{url.strip().lower()}"
+        title = entry.get("title")
+        if isinstance(title, str) and title.strip():
+            return f"title:{title.strip().lower()}"
+        return f"obj:{id(entry)}"
+
+    for candidate in [*primary, *secondary]:
+        key = _result_key(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(candidate)
+
+    return merged
 
 
 def _extract_hits_and_total(
@@ -271,6 +397,7 @@ def _format_dataset_assistant_summary(payload: Dict[str, Any], max_items: int = 
     total = payload.get("total")
     if isinstance(total, int):
         lines.append(f"(Total hits reported by API: {total})")
+    lines.append("")
     lines.append("Note: BioImage Archive beta search can be incomplete or intermittent.")
     return "\n".join(lines)
 
@@ -288,7 +415,10 @@ def _normalize_search_payload(
     result_items = raw_results if isinstance(raw_results, list) else []
 
     compact_results: List[Dict[str, Any]] = []
-    for entry in result_items[:result_limit]:
+    ranked_items = result_items
+    if kind == "datasets":
+        ranked_items = _rerank_dataset_results(result_items, query)
+    for entry in ranked_items[:result_limit]:
         if not isinstance(entry, dict):
             continue
         if kind == "datasets":
@@ -361,8 +491,20 @@ def _fallback_terms_from_query(query: str) -> List[str]:
     return terms
 
 
+def _fallback_candidate_terms(query: str) -> List[str]:
+    candidates: List[str] = []
+    for term in _fallback_terms_from_query(query):
+        if term not in candidates:
+            candidates.append(term)
+    for term in _query_terms(query):
+        if term not in candidates:
+            candidates.append(term)
+    return candidates
+
+
 async def _search_datasets_once(query: str, safe_limit: int) -> Dict[str, Any]:
-    proxied = await _search_via_proxy("datasets", query, safe_limit)
+    fetch_limit = min(60, max(20, safe_limit * 6))
+    proxied = await _search_via_proxy("datasets", query, fetch_limit)
     if isinstance(proxied, dict):
         if "error" in proxied:
             raise RuntimeError(proxied["error"])
@@ -377,7 +519,7 @@ async def _search_datasets_once(query: str, safe_limit: int) -> Dict[str, Any]:
     hits, total = _extract_hits_and_total(payload)
     top_hits: List[Dict[str, Any]] = []
 
-    for item in hits[: max(1, safe_limit)]:
+    for item in hits[:fetch_limit]:
         if isinstance(item, dict):
             top_hits.append(_dataset_result_from_hit(item))
 
@@ -402,17 +544,69 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
         Dictionary with request URL, total count, and top results.
     """
     safe_limit = max(1, int(limit))
+    print(f"DEBUG: search_datasets primary query='{query}' limit={safe_limit}")
     primary_result = await _search_datasets_once(query, safe_limit)
     if isinstance(primary_result.get("total"), int) and primary_result.get("total", 0) > 0:
+        primary_items = primary_result.get("results")
+        primary_list = primary_items if isinstance(primary_items, list) else []
+        print(
+            f"DEBUG: search_datasets primary query returned total={primary_result.get('total', 0)}"
+        )
+        if not _has_strong_match(primary_list, query) and len(_query_terms(query)) >= 2:
+            for term in _fallback_candidate_terms(query)[:4]:
+                print(
+                    f"DEBUG: search_datasets enrichment query='{term}' after weak relevance in primary query='{query}'"
+                )
+                enrichment_result = await _search_datasets_once(term, safe_limit)
+                enrichment_items = enrichment_result.get("results")
+                enrichment_list = (
+                    enrichment_items if isinstance(enrichment_items, list) else []
+                )
+                merged_results = _merge_unique_dataset_results(primary_list, enrichment_list)
+                reranked = _rerank_dataset_results(merged_results, query)
+                primary_result["results"] = reranked[: min(8, safe_limit)]
+                primary_result["assistant_summary"] = _format_dataset_assistant_summary(
+                    primary_result, max_items=min(5, safe_limit)
+                )
+                if _has_strong_match(primary_result["results"], query):
+                    primary_result["enriched_with_query"] = term
+                    break
         return primary_result
 
-    if " and " in query.lower():
-        for term in _fallback_terms_from_query(query)[:2]:
+    fallback_candidates = _fallback_candidate_terms(query)
+    if len(fallback_candidates) >= 1:
+        merged_results: List[Dict[str, Any]] = []
+        fallback_terms_used: List[str] = []
+        for term in fallback_candidates[:4]:
+            print(
+                f"DEBUG: search_datasets fallback query='{term}' after empty primary query='{query}'"
+            )
             fallback_result = await _search_datasets_once(term, safe_limit)
-            if isinstance(fallback_result.get("total"), int) and fallback_result.get("total", 0) > 0:
-                fallback_result["fallback_from_query"] = query
-                return fallback_result
+            fallback_items = fallback_result.get("results")
+            fallback_list = fallback_items if isinstance(fallback_items, list) else []
+            if fallback_list:
+                merged_results = _merge_unique_dataset_results(merged_results, fallback_list)
+                fallback_terms_used.append(term)
+                print(
+                    f"DEBUG: search_datasets fallback query returned total={fallback_result.get('total', 0)}"
+                )
 
+        if merged_results:
+            reranked = _rerank_dataset_results(merged_results, query)
+            aggregated: Dict[str, Any] = {
+                "query": query,
+                "url": _build_url(BASE_SEARCH_URL, query),
+                "total": len(merged_results),
+                "results": reranked[: min(8, safe_limit)],
+                "fallback_from_query": query,
+                "fallback_terms_used": fallback_terms_used,
+            }
+            aggregated["assistant_summary"] = _format_dataset_assistant_summary(
+                aggregated, max_items=min(5, safe_limit)
+            )
+            return aggregated
+
+    print(f"DEBUG: search_datasets no results for query='{query}'")
     return primary_result
 
 
@@ -526,9 +720,13 @@ Use tools first whenever a user asks for archive results.
 - The beta index is limited/incomplete, so infer likely terms from startup probe output.
 - When querying based on the user's prompt, start very briefly.
 - Prefer OR-style brief queries first (for example: "mouse OR tumor").
+- For multi-concept dataset requests (for example "mouse tumor"), run at least two dataset tool calls even if the first call returns enough results.
+- A good default sequence is: (1) broad OR query, then (2) one high-prior single-term query from startup probe totals.
+- If a follow-up model/proxy call times out after tool results already exist, ignore that transient timeout and finalize using available tool results; do not mention backend/proxy timeouts to the user.
 - If an OR query returns no dataset results, do not switch to AND. Immediately try single-term fallbacks.
-- If queries fail repeatedly or are empty, simplify to single-term fallbacks ("tumor", "mouse", "cancer").
-- Make at most two fallback calls, then provide a best-effort final answer and explicitly mention beta limitations.
+- If queries fail repeatedly or are empty, simplify to single-term fallbacks ("mouse", "tumor", "cancer", "neuroblastoma").
+- Use startup probe totals as your prior about likely matches.
+- Make up to four fallback calls, then provide a best-effort final answer and explicitly mention beta limitations.
 - If any dataset query already returns at least the requested number of results, stop calling tools and answer immediately.
 - Tool outputs are intentionally compact and may include an assistant_summary field; use that summary when finalizing under timeout/fallback.
 Then provide a concise human summary with links/accessions whenever available.
