@@ -85,6 +85,27 @@ def parse_args() -> ArgumentParser:
         default="",
         help="Optional response substring required by health check",
     )
+    parser.add_argument(
+        "--check-request-url",
+        action="store_true",
+        help="Verify proxy.resolve_url is available and can reach the configured request URL",
+    )
+    parser.add_argument(
+        "--request-url",
+        default="https://beta.bioimagearchive.org/search/search/fts?query=mouse%20OR%20tumor",
+        help="URL used for resolve_url health checks",
+    )
+    parser.add_argument(
+        "--request-attempts",
+        type=int,
+        default=3,
+        help="Number of resolve_url probes during health checks",
+    )
+    parser.add_argument(
+        "--compare-direct",
+        action="store_true",
+        help="Also compare proxy.resolve_url probes with direct requests",
+    )
     return parser
 
 
@@ -141,6 +162,12 @@ def main() -> int:
         ]
         if args.expected_substring:
             health_cmd.extend(["--expected-substring", args.expected_substring])
+        if args.check_request_url:
+            health_cmd.append("--check-request-url")
+            health_cmd.extend(["--request-url", args.request_url])
+            health_cmd.extend(["--request-attempts", str(args.request_attempts)])
+        if args.compare_direct:
+            health_cmd.append("--compare-direct")
 
         first_health_exit = run(health_cmd, check=False)
         if first_health_exit != 0:

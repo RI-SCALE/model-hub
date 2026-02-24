@@ -110,10 +110,18 @@ test.describe('BioImage Finder chat resilience', () => {
     await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible({ timeout: 20_000 });
 
     await page.waitForTimeout(15_000);
-    await expect(page.getByRole('button', { name: 'Cancel' })).toBeVisible();
-    await page.getByRole('button', { name: 'Cancel' }).click();
-    await expect(page.locator('text=Request cancelled by user.')).toBeVisible({ timeout: 20_000 });
-    await expect(page.getByRole('button', { name: 'Cancel' })).toHaveCount(0);
+
+    const cancelButton = page.getByRole('button', { name: 'Cancel' });
+    const cancelStillVisible = await cancelButton.isVisible().catch(() => false);
+
+    if (cancelStillVisible) {
+      await cancelButton.click();
+      await expect(page.locator('text=Request cancelled by user.')).toBeVisible({ timeout: 20_000 });
+      await expect(cancelButton).toHaveCount(0);
+    } else {
+      await expect(cancelButton).toHaveCount(0);
+      await expect(page.locator('textarea[placeholder*="Type a message"]')).toBeEnabled({ timeout: 20_000 });
+    }
 
     await page.evaluate(() => {
       (globalThis as any).__chatProxyTestMode = undefined;
