@@ -63,8 +63,11 @@ The RI-SCALE agent stack is intentionally simple:
 Current frontend expects chat-proxy to expose:
 
 - `chat_completion(messages, tools, tool_choice, model)`
+- `resolve_url(url, method='GET', headers=None, timeout=30.0)`
 
 The service must be **publicly visible** for anonymous users.
+
+`resolve_url` is used as a CORS-safe relay for selected agent tool HTTP calls (for example, `beta.bioimagearchive.org`) so browser-origin CORS restrictions do not break tool execution.
 
 ---
 
@@ -103,6 +106,29 @@ Important notes:
 - This is **origin-dependent** (not only localhost).
 - It can still happen on deployed domains unless that origin is explicitly allowed by the target server.
 - For reliability, route archive/network fetches through a backend proxy service where possible.
+
+### BioImage Finder Result Quality
+
+For BioImage Archive dataset requests, the BioImage Finder startup script applies a relevance strategy designed for noisy/intermittent beta-index results:
+
+1. Build a brief OR-style query first (for example: `mouse OR tumor`).
+2. If primary query quality is weak or empty, run fallback single-term queries (up to four terms).
+3. Merge unique results from fallback queries and rerank by request-term relevance.
+4. Return the top compact list with accessions/links and a clear beta-index limitation note.
+
+Implementation details live in:
+
+- `scripts/agent_startup_scripts/bioimage_finder_startup_script.py`
+- `docs/bioimage-finder-startup-script.py`
+
+The startup script includes:
+
+- query-term extraction with stopword filtering,
+- relevance scoring over title/description/accession,
+- duplicate-safe result merging across fallback terms,
+- assistant summaries optimized for concise user-facing answers.
+
+To validate quality behavior quickly, run the startup script checks against real API responses and inspect generated summaries for mixed-term prompts (for example, `mouse tumor cancer`).
 
 ### Kernel Logs and Debug Report
 

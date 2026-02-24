@@ -28,6 +28,11 @@ interface SessionInputDraftCache {
   [sessionKey: string]: string;
 }
 
+interface UiEventEntry {
+  timestamp: string;
+  message: string;
+}
+
 const MAX_COLLAPSED_MESSAGE_CHARS = 1200;
 const MAX_COLLAPSED_MESSAGE_LINES = 16;
 const MAX_PROGRESS_TRACE_DETAILS = 30;
@@ -43,7 +48,7 @@ const O4_MINI_CHAT_MODEL = 'o4-mini';
 const O3_MINI_CHAT_MODEL = 'o3-mini';
 const O3_CHAT_MODEL = 'o3';
 const GPT4O_MINI_CHAT_MODEL = 'gpt-4o-mini';
-const DEFAULT_CHAT_MODEL = GPT5_MINI_CHAT_MODEL;
+const DEFAULT_CHAT_MODEL = GPT41_CHAT_MODEL;
 
 const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
   { value: GPT5_NANO_CHAT_MODEL, label: 'GPT-5 nano' },
@@ -61,11 +66,15 @@ const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
 
 const CHAT_MODEL_IDS = new Set(CHAT_MODEL_OPTIONS.map(option => option.value));
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
+const BRANCH_SPECIFIC_CHAT_PROXY_APP_ID = 'chat-proxy-dev-fix-bia-hit-extraction-and-branch-proxy';
 const PRODUCTION_CHAT_PROXY_APP_ID = 'chat-proxy';
 const MAX_CHAT_PROXY_APP_ID_LENGTH = 63;
-const CHAT_PROXY_REQUEST_TIMEOUT_MS = 300_000;
-const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 15_000;
-const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 300_000;
+const CHAT_PROXY_REQUEST_TIMEOUT_MS = 900_000;
+const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 60_000;
+const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 900_000;
+const AGENT_TOOL_EXECUTION_LIMIT = 50;
+const AGENT_ITERATION_SOFT_TIMEOUT_MS = 90_000;
+const AGENT_ITERATION_HARD_TIMEOUT_MS = 130_000;
 
 const slugifyBranchName = (branchName: string): string => {
   const normalized = branchName
@@ -89,6 +98,44 @@ const makeDevAppId = (branchName: string, prefix: string = DEFAULT_DEV_CHAT_PROX
   return trimmedSlug ? `${prefix}-${trimmedSlug}` : prefix;
 };
 
+const normalizeBranchRefName = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+
+  const knownPrefixes = ['refs/heads/', 'origin/', 'refs/remotes/origin/'];
+  for (const prefix of knownPrefixes) {
+    if (trimmed.startsWith(prefix)) {
+      return trimmed.slice(prefix.length);
+    }
+  }
+
+  return trimmed;
+};
+
+const deriveAgentInstructionPrompt = (rawPrompt: string): string => {
+  const trimmed = rawPrompt.trim();
+  if (!trimmed) return '';
+
+  const looksLikeCode = /\bimport\s+\w+|\bdef\s+\w+\(|\basync\s+def\s+\w+\(|\n\s*print\(/.test(trimmed);
+  if (!looksLikeCode) {
+    return trimmed;
+  }
+
+  const printTripleQuoteMatch = trimmed.match(/print\(\s*"""([\s\S]*?)"""\s*\)/m);
+  if (printTripleQuoteMatch && printTripleQuoteMatch[1]) {
+    const extracted = printTripleQuoteMatch[1].trim();
+    if (extracted) return extracted;
+  }
+
+  const youAreIndex = trimmed.lastIndexOf('You are ');
+  if (youAreIndex >= 0) {
+    const extracted = trimmed.slice(youAreIndex).trim();
+    if (extracted) return extracted;
+  }
+
+  return trimmed.slice(0, 3000).trim();
+};
+
 const uniqueNonEmptyValues = (values: Array<string | undefined | null>): string[] => {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -101,28 +148,44 @@ const uniqueNonEmptyValues = (values: Array<string | undefined | null>): string[
   return result;
 };
 
+const escapeForPythonSingleQuotedString = (value: string): string => {
+  const backslash = String.fromCharCode(92);
+  return value
+    .replaceAll(backslash, `${backslash}${backslash}`)
+    .replaceAll("'", `${backslash}'`);
+};
+
 const getChatProxyServiceIds = (): string[] => {
   const isProductionBuild = process.env.NODE_ENV === 'production';
   const configuredAppId = (process.env.REACT_APP_CHAT_PROXY_APP_ID || '').trim();
   if (isProductionBuild) {
-    return [`ri-scale/default@${configuredAppId || PRODUCTION_CHAT_PROXY_APP_ID}`];
+    return [`ri-scale/default@${PRODUCTION_CHAT_PROXY_APP_ID}`];
   }
+
+  const explicitBranchProxyAppId = (process.env.REACT_APP_CHAT_PROXY_BRANCH_APP_ID || '').trim();
 
   const branchNameCandidates = uniqueNonEmptyValues([
     process.env.REACT_APP_CHAT_PROXY_BRANCH,
     process.env.REACT_APP_BRANCH_NAME,
     process.env.REACT_APP_GITHUB_HEAD_REF,
     process.env.REACT_APP_GITHUB_REF_NAME,
+    process.env.REACT_APP_VERCEL_GIT_COMMIT_REF,
+    process.env.REACT_APP_CI_COMMIT_REF_NAME,
+    process.env.REACT_APP_BRANCH,
     process.env.GITHUB_HEAD_REF,
     process.env.GITHUB_REF_NAME,
-  ]);
+  ]).map(normalizeBranchRefName);
 
   const branchAppIds = branchNameCandidates.map((branchName) => makeDevAppId(branchName));
+  const nonGenericConfiguredAppId = configuredAppId && configuredAppId !== DEFAULT_DEV_CHAT_PROXY_APP_ID
+    ? configuredAppId
+    : '';
   const appIdCandidates = uniqueNonEmptyValues([
-    configuredAppId,
+    explicitBranchProxyAppId,
     ...branchAppIds,
+    BRANCH_SPECIFIC_CHAT_PROXY_APP_ID,
+    nonGenericConfiguredAppId,
     DEFAULT_DEV_CHAT_PROXY_APP_ID,
-    PRODUCTION_CHAT_PROXY_APP_ID,
   ]);
 
   return appIdCandidates.map((appId) => `ri-scale/default@${appId}`);
@@ -237,6 +300,7 @@ const AgentPage: React.FC = () => {
   const [agentReady, setAgentReady] = useState(false);
   const [agentProgress, setAgentProgress] = useState<string | null>(null);
   const [agentProgressDetails, setAgentProgressDetails] = useState<string[]>([]);
+  const [uiEvents, setUiEvents] = useState<UiEventEntry[]>([]);
   const [showAgentProgressDetails, setShowAgentProgressDetails] = useState(false);
   const [typingSessionKey, setTypingSessionKey] = useState<string | null>(null);
   const [expandedMessageIds, setExpandedMessageIds] = useState<Record<string, boolean>>({});
@@ -981,7 +1045,7 @@ const AgentPage: React.FC = () => {
         // We look for a requirements.txt file to install extra dependencies
         // Also check manifest for dependencies?
         const reqFile = files.find((f: any) => f.name === 'requirements.txt');
-        let packages: string[] = ["hypha-rpc", "openai"]; // Always install hypha-rpc and openai
+        let packages: string[] = ["hypha-rpc==0.21.19", "openai"]; // Always install hypha-rpc and openai
 
         if (reqFile) {
             console.log("Installing dependencies from requirements.txt...");
@@ -1002,15 +1066,17 @@ const AgentPage: React.FC = () => {
 
         if (packages.length > 0) {
             const packagesJson = JSON.stringify(packages);
-            const chatProxyServiceIdsLiteral = JSON.stringify(CHAT_PROXY_SERVICE_IDS)
-              .replaceAll('\\', '\\\\')
-              .replaceAll("'", "\\'");
-            const installCode = `
+            const chatProxyServiceIdsLiteral = escapeForPythonSingleQuotedString(
+              JSON.stringify(CHAT_PROXY_SERVICE_IDS)
+            );
+            const installCode = String.raw`
 import micropip
 import json
 import traceback
 import js
 import asyncio
+from urllib.parse import urlparse
+import httpx
 from hypha_rpc import connect_to_server
 
 try:
@@ -1024,12 +1090,172 @@ except Exception as e:
 # Define the proxy function for compatibility with agents expecting js.hypha_chat_proxy
 
 def _is_timeout_payload(payload):
-  if isinstance(payload, str):
-    return "timed out" in payload.lower() or "timeout" in payload.lower()
+  timeout_tokens = [
+    "request timed out",
+    "timed out",
+    "request timeout",
+    "gateway timeout",
+    "deadline exceeded",
+    "upstream timeout",
+    "bridge-timeout",
+  ]
+  timeout_codes = {"timeout", "request_timeout", "gateway_timeout", "upstream_timeout", "bridge-timeout"}
   if isinstance(payload, dict):
+    code = payload.get("code")
+    if isinstance(code, str) and code.strip().lower() in timeout_codes:
+      return True
+    status = payload.get("status") or payload.get("status_code")
+    if isinstance(status, int) and status in (408, 504):
+      return True
     err = payload.get("error") or payload.get("message")
-    return isinstance(err, str) and ("timed out" in err.lower() or "timeout" in err.lower())
+    if isinstance(err, str):
+      lowered = err.lower()
+      return any(token in lowered for token in timeout_tokens)
+    return False
+  if isinstance(payload, str):
+    lowered = payload.lower()
+    return any(token in lowered for token in timeout_tokens)
   return False
+
+def _extract_timeout_seconds(timeout_value, fallback=30.0):
+  if timeout_value is None:
+    return float(fallback)
+  if isinstance(timeout_value, (int, float)):
+    return float(timeout_value)
+  candidate = getattr(timeout_value, "read", None)
+  if isinstance(candidate, (int, float)):
+    return float(candidate)
+  candidate = getattr(timeout_value, "connect", None)
+  if isinstance(candidate, (int, float)):
+    return float(candidate)
+  return float(fallback)
+
+def _should_proxy_request_url(url):
+  try:
+    parsed = urlparse(str(url))
+  except Exception:
+    return False
+  host = (parsed.hostname or "").lower()
+  return host == "beta.bioimagearchive.org"
+
+class _ProxyHTTPXResponse:
+  def __init__(self, payload, url):
+    self._payload = payload or {}
+    self.status_code = int(self._payload.get("status_code") or self._payload.get("status") or 500)
+    self.headers = self._payload.get("headers") or {}
+    self.url = self._payload.get("url") or str(url)
+    self._json = self._payload.get("json")
+    self._text = self._payload.get("text")
+
+  @property
+  def text(self):
+    if self._text is not None:
+      return self._text
+    if self._json is not None:
+      try:
+        return json.dumps(self._json, ensure_ascii=False)
+      except Exception:
+        return str(self._json)
+    return ""
+
+  def json(self):
+    if self._json is not None:
+      return self._json
+    if self._text is None:
+      return {}
+    return json.loads(self._text)
+
+  def raise_for_status(self):
+    if self.status_code >= 400:
+      detail = self._payload.get("error")
+      if isinstance(detail, str) and detail:
+        raise RuntimeError(f"Server error '{self.status_code}' for url '{self.url}': {detail}")
+      raise RuntimeError(f"Server error '{self.status_code}' for url '{self.url}'")
+
+async def _resolve_proxy_service_for_utilities():
+  service_ids = json.loads('${chatProxyServiceIdsLiteral}')
+  server = await connect_to_server({
+    "server_url": "https://hypha.aicell.io",
+    "method_timeout": 600
+  })
+
+  proxy = None
+  resolved_service_id = None
+  last_service_error = None
+  for service_id in service_ids:
+    try:
+      proxy = await server.get_service(service_id, {"timeout": 600})
+      resolved_service_id = service_id
+      break
+    except BaseException as service_exp:
+      last_service_error = service_exp
+
+  if proxy is None:
+    if last_service_error:
+      raise last_service_error
+    raise RuntimeError("No chat-proxy service IDs configured")
+
+  print(f"DEBUG: Utility proxy resolved via {resolved_service_id}")
+  return proxy
+
+async def _proxy_request_url_via_service(url, method="GET", headers=None, timeout=30.0):
+  try:
+    proxy = await _resolve_proxy_service_for_utilities()
+    if not hasattr(proxy, 'resolve_url'):
+      return {
+        "ok": False,
+        "error": "chat-proxy service is missing resolve_url; deploy updated chat-proxy app",
+        "status_code": 502,
+        "url": str(url),
+      }
+    payload = await asyncio.wait_for(
+      proxy.resolve_url(url=url, method=method, headers=headers or {}, timeout=float(timeout)),
+      timeout=max(5.0, float(timeout) + 5.0)
+    )
+    return payload if isinstance(payload, dict) else {
+      "ok": False,
+      "error": f"Unexpected resolve_url payload type: {type(payload)}",
+      "status_code": 500,
+      "url": str(url),
+      "text": str(payload),
+    }
+  except Exception as exp:
+    return {
+      "ok": False,
+      "error": str(exp),
+      "status_code": 502,
+      "url": str(url),
+    }
+
+_original_asyncclient_request = globals().get('__original_asyncclient_request')
+
+async def _patched_asyncclient_request(self, method, url, *args, **kwargs):
+  if _should_proxy_request_url(url):
+    timeout_seconds = _extract_timeout_seconds(kwargs.get("timeout"), 30.0)
+    headers = kwargs.get("headers") or {}
+    payload = await _proxy_request_url_via_service(
+      str(url),
+      method=str(method).upper(),
+      headers=headers,
+      timeout=timeout_seconds,
+    )
+    return _ProxyHTTPXResponse(payload, str(url))
+
+  return await _original_asyncclient_request(self, method, url, *args, **kwargs)
+
+def _install_httpx_proxy_patch():
+  global _original_asyncclient_request
+  if _original_asyncclient_request is None:
+    _original_asyncclient_request = httpx.AsyncClient.request
+    globals()['__original_asyncclient_request'] = _original_asyncclient_request
+
+  already_patched = getattr(httpx.AsyncClient.request, '__name__', '') == '_patched_asyncclient_request'
+  if already_patched:
+    print("DEBUG: httpx CORS proxy patch already installed")
+    return
+
+  httpx.AsyncClient.request = _patched_asyncclient_request
+  print("DEBUG: Installed httpx proxy patch for beta.bioimagearchive.org")
 
 async def _python_fallback_chat_completion(messages, tools, tool_choice, model):
   last_exception = None
@@ -1114,17 +1340,35 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
     if tool_choice is not None:
       print(f"TRACE: proxy tool_choice => {json.dumps(tool_choice, ensure_ascii=False)}")
 
+    fallback_model = '${DEFAULT_CHAT_MODEL}'
     result = await _python_fallback_chat_completion(messages, tools, tool_choice, model)
+
+    if (
+      isinstance(result, dict)
+      and "error" in result
+      and isinstance(model, str)
+      and model.strip()
+      and model.strip() != fallback_model
+    ):
+      print(f"DEBUG: Model {model} returned error payload; retrying once with fallback model {fallback_model}")
+      fallback_result = await _python_fallback_chat_completion(messages, tools, tool_choice, fallback_model)
+      if not (isinstance(fallback_result, dict) and "error" in fallback_result):
+        result = fallback_result
+
     print(f"TRACE: proxy response => {json.dumps(result, ensure_ascii=False)}")
     return json.dumps(result)
   except asyncio.TimeoutError:
     return json.dumps({"error": "bridge-timeout: proxy call exceeded ${Math.floor(CHAT_PROXY_REQUEST_TIMEOUT_MS / 1000)}s"})
   except BaseException as e:
+    if isinstance(e, asyncio.CancelledError):
+      return json.dumps({"error": "bridge-timeout: request cancelled while awaiting proxy response"})
     print(f"DEBUG: Exception in hypha_chat_proxy bridge: {e}")
     traceback.print_exc()
-    return json.dumps({"error": f"bridge-error: {str(e)}"})
+    error_text = str(e).strip() or e.__class__.__name__
+    return json.dumps({"error": f"bridge-error: {error_text}"})
 
 print("DEBUG: hypha_chat_proxy bridge ready")
+_install_httpx_proxy_patch()
             `;
             await executeCode(installCode);
         }
@@ -1346,9 +1590,13 @@ print("DEBUG: hypha_chat_proxy bridge ready")
                throw new Error("Proxy service found but has no chat_completion method.");
            }
 
+           const normalizedToolChoice = args.tool_choice;
+           const isFinalizationCall = normalizedToolChoice === 'none';
+           const maxAttempts = isFinalizationCall ? 2 : 3;
+
            let result: any = null;
            let completionError: Error | null = null;
-           for (let attempt = 1; attempt <= 3; attempt += 1) {
+           for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
              try {
                const preferAlternateService = attempt > 1;
                const proxyForAttempt: any = attempt === 1
@@ -1360,7 +1608,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
                  `chat_completion response attempt ${attempt} from ${(globalThis as any).__chatProxyServiceId || CHAT_PROXY_SERVICE_ID}`
                );
 
-               if (isTimeoutPayload(result) && attempt < 3) {
+               if (isTimeoutPayload(result) && attempt < maxAttempts) {
                  completionError = new Error('Request timed out from chat proxy; retrying with alternate service if available.');
                  await new Promise(resolve => setTimeout(resolve, 350));
                  continue;
@@ -1371,11 +1619,11 @@ print("DEBUG: hypha_chat_proxy bridge ready")
              } catch (attemptError: any) {
                completionError = attemptError instanceof Error ? attemptError : new Error(String(attemptError));
                const isTimeoutError = /timed out|timeout/i.test(completionError.message || '');
-               if (attempt < 3 && isTimeoutError) {
+               if (attempt < maxAttempts && isTimeoutError) {
                  await new Promise(resolve => setTimeout(resolve, 350));
                  continue;
                }
-               if (attempt < 3 && !isTimeoutError) {
+               if (attempt < maxAttempts && !isTimeoutError) {
                  await new Promise(resolve => setTimeout(resolve, 350));
                  continue;
                }
@@ -1557,6 +1805,11 @@ print("DEBUG: hypha_chat_proxy bridge ready")
     };
   };
 
+  const appendUiEvent = (message: string) => {
+    const timestamp = new Date().toISOString();
+    setUiEvents(prev => [...prev, { timestamp, message }].slice(-100));
+  };
+
   const parseProgressFromStdout = (rawContent: string) => {
     const lines = rawContent
       .split('\n')
@@ -1590,6 +1843,11 @@ print("DEBUG: hypha_chat_proxy bridge ready")
       }
       if (line.startsWith('DEBUG: Exception in hypha_chat_proxy bridge:')) {
         updateAgentProgress('Chat proxy bridge exception.', line);
+        continue;
+      }
+      if (line.includes('DEBUG: Empty assistant response; requesting forced final answer')) {
+        updateAgentProgress('Finishing response after empty model output...', line);
+        continue;
       }
     }
   };
@@ -1663,7 +1921,10 @@ print("DEBUG: hypha_chat_proxy bridge ready")
           .map(m => ({ role: m.role, content: m.content }));
 
         if (agentSystemPrompt) {
-          history.unshift({ role: 'system', content: agentSystemPrompt });
+          const condensedAgentPrompt = deriveAgentInstructionPrompt(agentSystemPrompt);
+          if (condensedAgentPrompt) {
+            history.unshift({ role: 'system', content: condensedAgentPrompt });
+          }
         }
 
       history.unshift({
@@ -1715,7 +1976,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
       }
       
       const historyJsonBase64 = toBase64Utf8(JSON.stringify(history));
-      const chatModel = (agentChatModel || DEFAULT_CHAT_MODEL).replaceAll('\\', '\\\\').replaceAll("'", "\\'");
+      const chatModel = escapeForPythonSingleQuotedString(agentChatModel || DEFAULT_CHAT_MODEL);
 
         const runChatExecution = async (): Promise<string> => {
           return await new Promise<string>(async (resolve, reject) => {
@@ -1753,7 +2014,7 @@ print("DEBUG: hypha_chat_proxy bridge ready")
               );
             }, CHAT_PROXY_REQUEST_TIMEOUT_MS);
 
-            const code = `
+            const code = String.raw`
 import asyncio
 import js
 import json
@@ -1864,29 +2125,336 @@ async def _chat_wrapper():
         try:
           result = json.loads(result_json)
         except Exception as parse_err:
-          send_response({"text": f"Error from proxy: Invalid JSON response ({parse_err})"})
+          send_response({"text": "I’m having trouble reading the backend response right now. Please try again."})
           return
+
+        initial_model_error_text = None
         
         if isinstance(result, dict) and "error" in result:
-             send_response({"text": f"Error from proxy: {result['error']}"})
-             return
+             error_text = str(result.get("error", "")).lower()
+             is_timeout_like = any(token in error_text for token in [
+               "timeout",
+               "timed out",
+               "gateway timeout",
+               "request_timeout",
+               "bridge-timeout",
+               "deadline exceeded",
+             ])
+
+             if is_timeout_like:
+               condensed_messages = []
+               for msg in messages:
+                 if isinstance(msg, dict) and msg.get("role") == "system":
+                   condensed_messages.append(msg)
+
+               last_user = None
+               for msg in reversed(messages):
+                 if isinstance(msg, dict) and msg.get("role") == "user":
+                   maybe_content = msg.get("content")
+                   if isinstance(maybe_content, str) and maybe_content.strip():
+                     last_user = {"role": "user", "content": maybe_content.strip()}
+                     break
+
+               if isinstance(last_user, dict):
+                 condensed_messages.append(last_user)
+
+               if condensed_messages:
+                 print("DEBUG: Initial model call timed out; retrying once with condensed context")
+                 condensed_result_json = await hypha_chat_proxy(
+                     json.dumps(condensed_messages),
+                     tools_json,
+                     tool_choice_json,
+                   '${chatModel}'
+                 )
+                 print(f"DEBUG: condensed retry hypha_chat_proxy returned: {condensed_result_json[:100]}...")
+                 try:
+                   condensed_result = json.loads(condensed_result_json)
+                 except Exception:
+                   condensed_result = None
+
+                 if isinstance(condensed_result, dict) and "error" not in condensed_result:
+                   result = condensed_result
+                 else:
+                   initial_model_error_text = (
+                     str(condensed_result.get("error"))
+                     if isinstance(condensed_result, dict) and condensed_result.get("error")
+                     else "initial-timeout-after-condensed-retry"
+                   )
+                   result = {
+                     "choices": [
+                       {
+                         "message": {
+                           "role": "assistant",
+                           "content": "",
+                           "tool_calls": [],
+                         }
+                       }
+                     ]
+                   }
+               else:
+                 initial_model_error_text = "initial-timeout-without-condensed-context"
+                 result = {
+                   "choices": [
+                     {
+                       "message": {
+                         "role": "assistant",
+                         "content": "",
+                         "tool_calls": [],
+                       }
+                     }
+                   ]
+                 }
+             else:
+               initial_model_error_text = str(result.get("error", "initial-non-timeout-error"))
+               result = {
+                 "choices": [
+                   {
+                     "message": {
+                       "role": "assistant",
+                       "content": "",
+                       "tool_calls": [],
+                     }
+                   }
+                 ]
+               }
 
         choice = result['choices'][0]
         response_message = choice['message']
         tool_calls = response_message.get('tool_calls')
         content = response_message.get('content')
         
-        max_turns = 4
+        max_turns = ${AGENT_TOOL_EXECUTION_LIMIT}
+        soft_timeout_ms = ${AGENT_ITERATION_SOFT_TIMEOUT_MS}
+        hard_timeout_ms = ${AGENT_ITERATION_HARD_TIMEOUT_MS}
+        soft_deadline = asyncio.get_event_loop().time() + (soft_timeout_ms / 1000.0)
+        hard_deadline = asyncio.get_event_loop().time() + (hard_timeout_ms / 1000.0)
         turns = 0
         tool_result_cache = {}
-        service_unavailable_tool_errors = 0
+        total_tool_calls = 0
+        successful_tool_calls = 0
+        timeout_finalize_requested = False
+        tool_rounds = 0
+
+        def _is_timeout_error_payload(payload):
+          if isinstance(payload, dict):
+            timeout_codes = {"timeout", "request_timeout", "gateway_timeout", "upstream_timeout", "bridge-timeout"}
+            code = payload.get("code")
+            if isinstance(code, str) and code.strip().lower() in timeout_codes:
+              return True
+            status = payload.get("status") or payload.get("status_code")
+            if isinstance(status, int) and status in (408, 504):
+              return True
+            maybe_error = payload.get("error") or payload.get("message")
+            if isinstance(maybe_error, str):
+              lowered = maybe_error.lower()
+              return any(token in lowered for token in [
+                "request timed out",
+                "timed out",
+                "request timeout",
+                "gateway timeout",
+                "deadline exceeded",
+                "upstream timeout",
+                "bridge-timeout",
+              ])
+            return False
+          if isinstance(payload, str):
+            lowered = payload.lower()
+            return any(token in lowered for token in [
+              "request timed out",
+              "timed out",
+              "request timeout",
+              "gateway timeout",
+              "deadline exceeded",
+              "upstream timeout",
+              "bridge-timeout",
+            ])
+          return False
+
+        async def _call_follow_up(messages_payload, tools_payload, tool_choice_payload):
+          remaining_seconds = soft_deadline - asyncio.get_event_loop().time()
+          model_lower = '${chatModel}'.strip().lower()
+          slower_model = (
+            model_lower == 'gpt-5'
+            or model_lower.startswith('gpt-5.')
+            or model_lower == 'o3'
+          )
+          forcing_finalize = tool_choice_payload == "none"
+          if forcing_finalize:
+            max_followup_timeout = 18.0 if slower_model else 14.0
+          else:
+            max_followup_timeout = 24.0 if slower_model else 16.0
+          timeout_seconds = min(max_followup_timeout, max(4.0, remaining_seconds + 1.0))
+          try:
+            return await asyncio.wait_for(
+              hypha_chat_proxy(
+                json.dumps(messages_payload),
+                json.dumps(tools_payload) if tools_payload else None,
+                json.dumps(tool_choice_payload) if tools_payload else None,
+                '${chatModel}'
+              ),
+              timeout=timeout_seconds
+            )
+          except asyncio.TimeoutError:
+            return json.dumps({"error": "request_timeout", "code": "request_timeout", "status": 408})
+
+        async def _force_model_final_response(system_instruction):
+          system_message = {
+            "role": "system",
+            "content": system_instruction,
+          }
+          messages.append(system_message)
+
+          def _extract_forced_content(raw_json):
+            try:
+              parsed = json.loads(raw_json)
+            except Exception:
+              return None
+            if isinstance(parsed, dict) and "error" in parsed:
+              return None
+            forced_message = parsed['choices'][0]['message'] if isinstance(parsed, dict) else {}
+            forced_content = forced_message.get('content') if isinstance(forced_message, dict) else None
+            if isinstance(forced_content, str) and forced_content.strip():
+              return forced_content
+            return None
+
+          forced_json = await _call_follow_up(messages, tools, "none")
+          direct_content = _extract_forced_content(forced_json)
+          if isinstance(direct_content, str) and direct_content.strip():
+            return direct_content
+
+          condensed_messages = []
+          for msg in messages:
+            if not isinstance(msg, dict):
+              continue
+            role = msg.get("role")
+            if role == "system":
+              condensed_messages.append(msg)
+
+          last_user_message = None
+          for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+              content = msg.get("content")
+              if isinstance(content, str) and content.strip():
+                last_user_message = {"role": "user", "content": content}
+                break
+
+          if isinstance(last_user_message, dict):
+            condensed_messages.append(last_user_message)
+
+          recent_tool_messages = []
+          for msg in reversed(messages):
+            if not isinstance(msg, dict):
+              continue
+            if msg.get("role") != "tool":
+              continue
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+              recent_tool_messages.append({
+                "role": "tool",
+                "name": msg.get("name") if isinstance(msg.get("name"), str) else "tool",
+                "tool_call_id": msg.get("tool_call_id") if isinstance(msg.get("tool_call_id"), str) else "tool-call",
+                "content": content,
+              })
+            if len(recent_tool_messages) >= 3:
+              break
+          recent_tool_messages.reverse()
+          condensed_messages.extend(recent_tool_messages)
+
+          condensed_messages.append(system_message)
+
+          forced_json_compact = await _call_follow_up(condensed_messages, tools, "none")
+          compact_content = _extract_forced_content(forced_json_compact)
+          if isinstance(compact_content, str) and compact_content.strip():
+            return compact_content
+
+          urgent_messages = []
+          for msg in messages:
+            if not isinstance(msg, dict):
+              continue
+            if msg.get("role") == "system":
+              urgent_messages.append(msg)
+
+          last_user_message = None
+          for msg in reversed(messages):
+            if not isinstance(msg, dict):
+              continue
+            if msg.get("role") != "user":
+              continue
+            user_content = msg.get("content")
+            if isinstance(user_content, str) and user_content.strip():
+              last_user_message = {"role": "user", "content": user_content.strip()}
+              break
+
+          if isinstance(last_user_message, dict):
+            urgent_messages.append(last_user_message)
+
+          recent_tool_content_blocks = []
+          for msg in reversed(messages):
+            if not isinstance(msg, dict):
+              continue
+            if msg.get("role") != "tool":
+              continue
+            tool_content = msg.get("content")
+            if isinstance(tool_content, str) and tool_content.strip():
+              recent_tool_content_blocks.append(tool_content)
+            if len(recent_tool_content_blocks) >= 3:
+              break
+
+          if recent_tool_content_blocks:
+            recent_tool_content_blocks.reverse()
+            urgent_messages.append({
+              "role": "system",
+              "content": "Use these latest tool outputs as context:\n\n" + "\n\n".join(recent_tool_content_blocks),
+            })
+
+          urgent_messages.append({
+            "role": "system",
+            "content": "YOU HAVE TO RESPOND ASAP. Return a final user-facing answer now. Do not call tools.",
+          })
+
+          for _ in range(2):
+            urgent_json = await _call_follow_up(urgent_messages, None, None)
+            urgent_content = _extract_forced_content(urgent_json)
+            if isinstance(urgent_content, str) and urgent_content.strip():
+              return urgent_content
+
+          return None
 
         while True:
+          if isinstance(initial_model_error_text, str) and initial_model_error_text:
+            messages.append({
+              "role": "system",
+              "content": "Earlier model call(s) failed before tool execution. Return a best-effort final user-facing response now. If needed, briefly suggest a simpler retry query.",
+            })
+            initial_model_error_text = None
+
+          if asyncio.get_event_loop().time() >= hard_deadline:
+            forced_content = await _force_model_final_response(
+              "You have reached the hard response timeout. You MUST return a final user-facing answer now based on your reasoning and the collected tool outputs/errors. Do not call additional tools."
+            )
+            if isinstance(forced_content, str) and forced_content.strip():
+              send_response({"text": forced_content})
+              return
+            send_response({"text": "I’m taking longer than expected, so I’m stopping here. Please try again."})
+            return
+
           tool_calls = response_message.get('tool_calls')
           content = response_message.get('content')
 
           if not tool_calls:
-            send_response({"text": content})
+            if isinstance(content, str) and content.strip():
+              send_response({"text": content})
+              return
+
+            print("DEBUG: Empty assistant response; requesting forced final answer")
+            forced_empty_content = await _force_model_final_response(
+              "Your previous response was empty. You MUST return a final user-facing response now based on your reasoning and the tool outputs already collected. If results are weak, explain limitations and give best-effort guidance. Do not call additional tools."
+            )
+            if isinstance(forced_empty_content, str) and forced_empty_content.strip():
+              send_response({"text": forced_empty_content})
+              return
+
+            send_response({"text": "I'm having trouble finishing this request right now. Please try again."})
             return
 
           if turns >= max_turns:
@@ -1894,8 +2462,12 @@ async def _chat_wrapper():
             return
 
           messages.append(response_message)
+          tool_rounds += 1
+          tool_errors_this_turn = 0
+          tool_success_this_turn = 0
 
           for tool_call in tool_calls:
+            total_tool_calls += 1
             function_name = tool_call['function']['name']
             args_content = tool_call['function']['arguments']
 
@@ -1931,8 +2503,8 @@ async def _chat_wrapper():
                   tool_result_cache[cache_key] = function_response
 
                 function_response_text = str(function_response)
-                if function_name in ('search_datasets', 'search_images') and '503 Service Unavailable' in function_response_text:
-                  service_unavailable_tool_errors += 1
+                successful_tool_calls += 1
+                tool_success_this_turn += 1
 
                 messages.append({
                   "tool_call_id": tool_call_id,
@@ -1942,8 +2514,7 @@ async def _chat_wrapper():
                 })
               except Exception as e:
                 error_text = str(e)
-                if function_name in ('search_datasets', 'search_images') and '503 Service Unavailable' in error_text:
-                  service_unavailable_tool_errors += 1
+                tool_errors_this_turn += 1
                 messages.append({
                   "tool_call_id": tool_call_id,
                   "role": "tool",
@@ -1951,6 +2522,7 @@ async def _chat_wrapper():
                   "content": f"Error: {error_text}",
                 })
             else:
+              tool_errors_this_turn += 1
               messages.append({
                 "tool_call_id": tool_call_id,
                 "role": "tool",
@@ -1958,43 +2530,86 @@ async def _chat_wrapper():
                 "content": f"Error: Tool '{function_name}' is not available.",
               })
 
-          if service_unavailable_tool_errors >= 2:
-            send_response({
-              "text": "The archive search service is temporarily unavailable (HTTP 503), so I can’t retrieve reliable results right now. Please try again shortly."
+          remaining_before_soft_deadline = soft_deadline - asyncio.get_event_loop().time()
+          if (
+            tool_rounds >= 5
+            and total_tool_calls > 0
+            and not timeout_finalize_requested
+            and remaining_before_soft_deadline <= 12.0
+          ):
+            timeout_finalize_requested = True
+            messages.append({
+              "role": "system",
+              "content": "You are approaching timeout after multiple tool rounds. Return a final user-facing answer now based on collected tool outputs/errors. Do not call additional tools.",
             })
-            return
+
+          if asyncio.get_event_loop().time() >= soft_deadline and not timeout_finalize_requested:
+            timeout_finalize_requested = True
+            messages.append({
+              "role": "system",
+              "content": f"You are near the response timeout ({int(soft_timeout_ms / 1000)}s). You MUST return a final user-facing answer now based on your reasoning and the collected tool outputs/errors. Do not call additional tools.",
+            })
+
+          if timeout_finalize_requested and turns >= 3:
+            forced_content = await _force_model_final_response(
+              "You are out of time. You MUST return a final user-facing answer now using your reasoning and the collected tool outputs/errors. Do not call additional tools."
+            )
+            if isinstance(forced_content, str) and forced_content.strip():
+              send_response({"text": forced_content})
+              return
 
           turns += 1
           next_tools_json = json.dumps(tools) if tools else None
-          next_tool_choice_json = json.dumps("auto") if tools else None
-          next_result_json = await hypha_chat_proxy(
-            json.dumps(messages),
-            next_tools_json,
-            next_tool_choice_json,
-            '${chatModel}'
-          )
+          next_tool_choice = "none" if timeout_finalize_requested else "auto"
+          next_tool_choice_json = json.dumps(next_tool_choice) if tools else None
+          next_result_json = await _call_follow_up(messages, tools, next_tool_choice)
           try:
             next_result = json.loads(next_result_json)
           except Exception as parse_err:
-            send_response({"text": f"Error from proxy: Invalid JSON response ({parse_err})"})
+            forced_content = await _force_model_final_response(
+              "The previous response could not be parsed. You MUST return a final user-facing answer now based on your reasoning and collected tool outputs/errors. Do not call additional tools."
+            )
+            if isinstance(forced_content, str) and forced_content.strip():
+              send_response({"text": forced_content})
+              return
+            send_response({"text": "I’m having trouble finishing this request right now. Please try again."})
             return
 
           if isinstance(next_result, dict) and "error" in next_result:
-            send_response({"text": f"Error from proxy: {next_result['error']}"})
+            if _is_timeout_error_payload(next_result) and not timeout_finalize_requested and total_tool_calls > 0:
+              timeout_finalize_requested = True
+              forced_content = await _force_model_final_response(
+                "The previous model call timed out. You MUST return a final user-facing answer now using your reasoning and the tool outputs already collected. Do not call additional tools."
+              )
+              if isinstance(forced_content, str) and forced_content.strip():
+                send_response({"text": forced_content})
+                return
+            send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
             return
 
           response_message = next_result['choices'][0]['message']
 
     except Exception as e:
-        traceback.print_exc()
-        send_response({"text": f"Error executing chat: {str(e)}"})
+      traceback.print_exc()
+      send_response({"text": "I hit a temporary runtime issue while preparing the response. Please try again."})
 
 await _chat_wrapper()
 `;
             if (executeCode) {
               await executeCode(code, {
                      onOutput: (log) => {
+                  const isBenignPyodideToPyNoise = (text: string | undefined) => {
+                    if (!text) return false;
+                    const normalized = text.toLowerCase();
+                    return normalized.includes('pyodide_websocket.py')
+                      && normalized.includes("'str' object has no attribute 'to_py'");
+                  };
+
                   if (log.type === 'error') {
+                    if (isBenignPyodideToPyNoise(log.content)) {
+                      updateAgentProgress('Ignoring known Pyodide websocket warning...', log.content || '');
+                      return;
+                    }
                     safeReject(new Error(log.content || 'Kernel execution error'));
                     return;
                   }
@@ -2017,6 +2632,10 @@ await _chat_wrapper()
                         if (log.type === 'stderr' && log.content) {
                           const stderr = log.content.trim();
                           if (stderr) {
+                            if (isBenignPyodideToPyNoise(stderr)) {
+                              updateAgentProgress('Ignoring known Pyodide websocket warning...');
+                              return;
+                            }
                             updateAgentProgress('Agent emitted runtime logs...', stderr);
                           }
                         }
@@ -2350,6 +2969,7 @@ await _chat_wrapper()
                 </div>
               </div>
               <div className="flex items-center space-x-2">
+                 {false && (
                  <button 
                   onClick={handleShareSession} 
                   className={`text-gray-400 hover:text-purple-500 transition-colors p-2 rounded-full hover:bg-purple-50`}
@@ -2357,6 +2977,7 @@ await _chat_wrapper()
                 >
                   <FiShare2 size={18} />
                 </button>
+                 )}
                  <button 
                   onClick={() => setShowLogs(!showLogs)}  
                   className={`text-gray-400 hover:text-blue-500 transition-colors p-2 rounded-full hover:bg-blue-50 ${showLogs ? 'text-blue-500 bg-blue-50' : ''}`}
@@ -2566,7 +3187,8 @@ await _chat_wrapper()
                           ];
 
                           const kernelLogLines = kernelExecutionLog.map((log) => `[${log.type}]${log.content}`);
-                          const combinedCopyLines = [...kernelLogLines, ...persistedProgressLines, ...liveProgressLines];
+                          const uiEventLines = uiEvents.map((entry) => `[ui] ${entry.timestamp} ${entry.message}`);
+                          const combinedCopyLines = [...kernelLogLines, ...uiEventLines, ...persistedProgressLines, ...liveProgressLines];
 
                           return (
                             <>
@@ -2599,6 +3221,17 @@ await _chat_wrapper()
                             {log.content}
                             </div>
                         ))}
+                        {uiEvents.length > 0 && (
+                          <>
+                            <div className="font-bold border-b border-gray-700 pb-2 mt-3 mb-2 text-gray-400">UI EVENTS</div>
+                            {uiEvents.map((entry, idx) => (
+                              <div key={`ui-event-${idx}-${entry.timestamp}`} className="mb-1 break-all text-cyan-200">
+                                <span className="opacity-50 mr-2">[ui]</span>
+                                {entry.timestamp} {entry.message}
+                              </div>
+                            ))}
+                          </>
+                        )}
                         {(persistedProgressLines.length > 0 || liveProgressLines.length > 0) && (
                           <>
                             <div className="font-bold border-b border-gray-700 pb-2 mt-3 mb-2 text-gray-400">MESSAGE PROGRESS TRACE</div>
@@ -2642,7 +3275,16 @@ await _chat_wrapper()
                 <select
                   id="chat-model-select"
                   value={agentChatModel}
-                  onChange={(e) => setAgentChatModel(e.target.value)}
+                  onChange={(e) => {
+                    const nextModel = e.target.value;
+                    const previousModel = agentChatModel;
+                    setAgentChatModel(nextModel);
+                    if (previousModel !== nextModel) {
+                      const eventText = `Model switched: ${previousModel} -> ${nextModel}`;
+                      console.info(eventText);
+                      appendUiEvent(eventText);
+                    }
+                  }}
                   className="text-xs border border-gray-300 rounded-md px-2 py-1 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-ri-orange"
                 >
                   {CHAT_MODEL_OPTIONS.map((option) => (

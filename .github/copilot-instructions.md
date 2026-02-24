@@ -23,6 +23,14 @@ Example usages of the web python kernel:
 
 The only backends for agent chat are the ri-scale/chat-proxy app in Hypha and the OpenAI API (which is called from the chat-proxy). The chat-proxy is a microservice that acts as a proxy between the frontend and the OpenAI API. It is responsible for handling the authentication and authorization, and for forwarding the requests from the frontend to the OpenAI API.
 
+### Agent architecture guardrails (important)
+
+- Keep `src/pages/AgentPage.tsx` agent-agnostic. Do not add BioImage Finder specific parsing, ranking, or formatting there.
+- Keep all BioImage Finder domain behavior in the BioImage Finder startup script (`scripts/agent_startup_scripts/bioimage_finder_startup_script.py`).
+- If an agent needs compact tool payloads or a structured fallback summary, implement those in that agent's startup script and return them as tool output.
+- Keep chat-proxy app agent-agnostic with only generic methods (`setup`, `chat_completion`, `resolve_url`).
+- Route external archive HTTP calls through `resolve_url` to avoid frontend CORS issues.
+
 ## Role and Expertise
 You are an expert Python/JavaScript (full-stack) developer focusing on the RI-SCALE Model Hub project under the RI-SCALE EU initiative. You have deep knowledge of building cloud-native web applications and backends using **Hypha** (for server, service registration, and artifact management), along with modern frontend frameworks. Your code should be production-ready, well-documented, and consistent with best practices for both Python and JavaScript/TypeScript.
 
