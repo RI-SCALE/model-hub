@@ -48,7 +48,7 @@ const O4_MINI_CHAT_MODEL = 'o4-mini';
 const O3_MINI_CHAT_MODEL = 'o3-mini';
 const O3_CHAT_MODEL = 'o3';
 const GPT4O_MINI_CHAT_MODEL = 'gpt-4o-mini';
-const DEFAULT_CHAT_MODEL = GPT5_MINI_CHAT_MODEL;
+const DEFAULT_CHAT_MODEL = GPT41_CHAT_MODEL;
 
 const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
   { value: GPT5_NANO_CHAT_MODEL, label: 'GPT-5 nano' },
@@ -73,8 +73,8 @@ const CHAT_PROXY_REQUEST_TIMEOUT_MS = 900_000;
 const CHAT_PROXY_RESOLVE_TIMEOUT_MS = 60_000;
 const CHAT_PROXY_COMPLETION_TIMEOUT_MS = 900_000;
 const AGENT_TOOL_EXECUTION_LIMIT = 50;
-const AGENT_ITERATION_SOFT_TIMEOUT_MS = 60_000;
-const AGENT_ITERATION_HARD_TIMEOUT_MS = 80_000;
+const AGENT_ITERATION_SOFT_TIMEOUT_MS = 90_000;
+const AGENT_ITERATION_HARD_TIMEOUT_MS = 130_000;
 
 const slugifyBranchName = (branchName: string): string => {
   const normalized = branchName
@@ -2127,6 +2127,8 @@ async def _chat_wrapper():
         except Exception as parse_err:
           send_response({"text": "I’m having trouble reading the backend response right now. Please try again."})
           return
+
+        initial_model_error_text = None
         
         if isinstance(result, dict) and "error" in result:
              error_text = str(result.get("error", "")).lower()
@@ -2173,14 +2175,48 @@ async def _chat_wrapper():
                  if isinstance(condensed_result, dict) and "error" not in condensed_result:
                    result = condensed_result
                  else:
-                   send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
-                   return
+                   initial_model_error_text = (
+                     str(condensed_result.get("error"))
+                     if isinstance(condensed_result, dict) and condensed_result.get("error")
+                     else "initial-timeout-after-condensed-retry"
+                   )
+                   result = {
+                     "choices": [
+                       {
+                         "message": {
+                           "role": "assistant",
+                           "content": "",
+                           "tool_calls": [],
+                         }
+                       }
+                     ]
+                   }
                else:
-                 send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
-                 return
+                 initial_model_error_text = "initial-timeout-without-condensed-context"
+                 result = {
+                   "choices": [
+                     {
+                       "message": {
+                         "role": "assistant",
+                         "content": "",
+                         "tool_calls": [],
+                       }
+                     }
+                   ]
+                 }
              else:
-               send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
-               return
+               initial_model_error_text = str(result.get("error", "initial-non-timeout-error"))
+               result = {
+                 "choices": [
+                   {
+                     "message": {
+                       "role": "assistant",
+                       "content": "",
+                       "tool_calls": [],
+                     }
+                   }
+                 ]
+               }
 
         choice = result['choices'][0]
         response_message = choice['message']
@@ -2198,7 +2234,6 @@ async def _chat_wrapper():
         successful_tool_calls = 0
         timeout_finalize_requested = False
         tool_rounds = 0
-        latest_tool_output_text = None
 
         def _is_timeout_error_payload(payload):
           if isinstance(payload, dict):
@@ -2263,35 +2298,142 @@ async def _chat_wrapper():
             return json.dumps({"error": "request_timeout", "code": "request_timeout", "status": 408})
 
         async def _force_model_final_response(system_instruction):
-          messages.append({
+          system_message = {
             "role": "system",
             "content": system_instruction,
-          })
-          forced_json = await _call_follow_up(messages, tools, "none")
-          try:
-            forced_result = json.loads(forced_json)
-            if isinstance(forced_result, dict) and "error" in forced_result:
+          }
+          messages.append(system_message)
+
+          def _extract_forced_content(raw_json):
+            try:
+              parsed = json.loads(raw_json)
+            except Exception:
               return None
-            forced_message = forced_result['choices'][0]['message'] if isinstance(forced_result, dict) else {}
+            if isinstance(parsed, dict) and "error" in parsed:
+              return None
+            forced_message = parsed['choices'][0]['message'] if isinstance(parsed, dict) else {}
             forced_content = forced_message.get('content') if isinstance(forced_message, dict) else None
             if isinstance(forced_content, str) and forced_content.strip():
               return forced_content
-          except Exception:
             return None
+
+          forced_json = await _call_follow_up(messages, tools, "none")
+          direct_content = _extract_forced_content(forced_json)
+          if isinstance(direct_content, str) and direct_content.strip():
+            return direct_content
+
+          condensed_messages = []
+          for msg in messages:
+            if not isinstance(msg, dict):
+              continue
+            role = msg.get("role")
+            if role == "system":
+              condensed_messages.append(msg)
+
+          last_user_message = None
+          for msg in reversed(messages):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+              content = msg.get("content")
+              if isinstance(content, str) and content.strip():
+                last_user_message = {"role": "user", "content": content}
+                break
+
+          if isinstance(last_user_message, dict):
+            condensed_messages.append(last_user_message)
+
+          recent_tool_messages = []
+          for msg in reversed(messages):
+            if not isinstance(msg, dict):
+              continue
+            if msg.get("role") != "tool":
+              continue
+            content = msg.get("content")
+            if isinstance(content, str) and content.strip():
+              recent_tool_messages.append({
+                "role": "tool",
+                "name": msg.get("name") if isinstance(msg.get("name"), str) else "tool",
+                "tool_call_id": msg.get("tool_call_id") if isinstance(msg.get("tool_call_id"), str) else "tool-call",
+                "content": content,
+              })
+            if len(recent_tool_messages) >= 3:
+              break
+          recent_tool_messages.reverse()
+          condensed_messages.extend(recent_tool_messages)
+
+          condensed_messages.append(system_message)
+
+          forced_json_compact = await _call_follow_up(condensed_messages, tools, "none")
+          compact_content = _extract_forced_content(forced_json_compact)
+          if isinstance(compact_content, str) and compact_content.strip():
+            return compact_content
+
+          urgent_messages = []
+          for msg in messages:
+            if not isinstance(msg, dict):
+              continue
+            if msg.get("role") == "system":
+              urgent_messages.append(msg)
+
+          last_user_message = None
+          for msg in reversed(messages):
+            if not isinstance(msg, dict):
+              continue
+            if msg.get("role") != "user":
+              continue
+            user_content = msg.get("content")
+            if isinstance(user_content, str) and user_content.strip():
+              last_user_message = {"role": "user", "content": user_content.strip()}
+              break
+
+          if isinstance(last_user_message, dict):
+            urgent_messages.append(last_user_message)
+
+          recent_tool_content_blocks = []
+          for msg in reversed(messages):
+            if not isinstance(msg, dict):
+              continue
+            if msg.get("role") != "tool":
+              continue
+            tool_content = msg.get("content")
+            if isinstance(tool_content, str) and tool_content.strip():
+              recent_tool_content_blocks.append(tool_content)
+            if len(recent_tool_content_blocks) >= 3:
+              break
+
+          if recent_tool_content_blocks:
+            recent_tool_content_blocks.reverse()
+            urgent_messages.append({
+              "role": "system",
+              "content": "Use these latest tool outputs as context:\n\n" + "\n\n".join(recent_tool_content_blocks),
+            })
+
+          urgent_messages.append({
+            "role": "system",
+            "content": "YOU HAVE TO RESPOND ASAP. Return a final user-facing answer now. Do not call tools.",
+          })
+
+          for _ in range(2):
+            urgent_json = await _call_follow_up(urgent_messages, None, None)
+            urgent_content = _extract_forced_content(urgent_json)
+            if isinstance(urgent_content, str) and urgent_content.strip():
+              return urgent_content
+
           return None
 
         while True:
+          if isinstance(initial_model_error_text, str) and initial_model_error_text:
+            messages.append({
+              "role": "system",
+              "content": "Earlier model call(s) failed before tool execution. Return a best-effort final user-facing response now. If needed, briefly suggest a simpler retry query.",
+            })
+            initial_model_error_text = None
+
           if asyncio.get_event_loop().time() >= hard_deadline:
             forced_content = await _force_model_final_response(
               "You have reached the hard response timeout. You MUST return a final user-facing answer now based on your reasoning and the collected tool outputs/errors. Do not call additional tools."
             )
             if isinstance(forced_content, str) and forced_content.strip():
               send_response({"text": forced_content})
-              return
-            if isinstance(latest_tool_output_text, str) and latest_tool_output_text.strip():
-              send_response({
-                "text": f"Model finalization was unavailable. Returning the latest tool output:\n\n{latest_tool_output_text}",
-              })
               return
             send_response({"text": "I’m taking longer than expected, so I’m stopping here. Please try again."})
             return
@@ -2310,12 +2452,6 @@ async def _chat_wrapper():
             )
             if isinstance(forced_empty_content, str) and forced_empty_content.strip():
               send_response({"text": forced_empty_content})
-              return
-
-            if isinstance(latest_tool_output_text, str) and latest_tool_output_text.strip():
-              send_response({
-                "text": f"Model finalization was unavailable. Returning the latest tool output:\n\n{latest_tool_output_text}",
-              })
               return
 
             send_response({"text": "I'm having trouble finishing this request right now. Please try again."})
@@ -2369,7 +2505,6 @@ async def _chat_wrapper():
                 function_response_text = str(function_response)
                 successful_tool_calls += 1
                 tool_success_this_turn += 1
-                latest_tool_output_text = function_response_text
 
                 messages.append({
                   "tool_call_id": tool_call_id,
@@ -2395,11 +2530,17 @@ async def _chat_wrapper():
                 "content": f"Error: Tool '{function_name}' is not available.",
               })
 
-          if tool_rounds >= 3 and total_tool_calls > 0 and not timeout_finalize_requested:
+          remaining_before_soft_deadline = soft_deadline - asyncio.get_event_loop().time()
+          if (
+            tool_rounds >= 5
+            and total_tool_calls > 0
+            and not timeout_finalize_requested
+            and remaining_before_soft_deadline <= 12.0
+          ):
             timeout_finalize_requested = True
             messages.append({
               "role": "system",
-              "content": "You have already executed multiple tool rounds. Return a final user-facing answer now based on collected tool outputs/errors. Do not call additional tools.",
+              "content": "You are approaching timeout after multiple tool rounds. Return a final user-facing answer now based on collected tool outputs/errors. Do not call additional tools.",
             })
 
           if asyncio.get_event_loop().time() >= soft_deadline and not timeout_finalize_requested:
@@ -2431,11 +2572,6 @@ async def _chat_wrapper():
             if isinstance(forced_content, str) and forced_content.strip():
               send_response({"text": forced_content})
               return
-            if isinstance(latest_tool_output_text, str) and latest_tool_output_text.strip():
-              send_response({
-                "text": f"Model finalization was unavailable. Returning the latest tool output:\n\n{latest_tool_output_text}",
-              })
-              return
             send_response({"text": "I’m having trouble finishing this request right now. Please try again."})
             return
 
@@ -2447,11 +2583,6 @@ async def _chat_wrapper():
               )
               if isinstance(forced_content, str) and forced_content.strip():
                 send_response({"text": forced_content})
-                return
-              if isinstance(latest_tool_output_text, str) and latest_tool_output_text.strip():
-                send_response({
-                  "text": f"Model finalization was unavailable. Returning the latest tool output:\n\n{latest_tool_output_text}",
-                })
                 return
             send_response({"text": "I’m having trouble completing this request right now. Please try again in a moment."})
             return
