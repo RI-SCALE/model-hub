@@ -2230,13 +2230,6 @@ async def _chat_wrapper():
           if not successful_tool_results:
             return None
 
-          for item in successful_tool_results:
-            parsed_output = _try_parse_dict(item.get('output'))
-            if isinstance(parsed_output, dict):
-              assistant_summary = parsed_output.get('assistant_summary')
-              if isinstance(assistant_summary, str) and assistant_summary.strip():
-                return assistant_summary
-
           lines = ["I executed the available tool(s) and collected these results:"]
           for index, item in enumerate(successful_tool_results[:5], start=1):
             tool_name = item.get('name') or 'tool'
@@ -2390,7 +2383,7 @@ async def _chat_wrapper():
 
             messages.append({
               "role": "system",
-              "content": "Your previous response was empty. Provide a concise final answer now. If no results were found, explain that clearly and suggest one or two nearby search terms. Do not call additional tools.",
+              "content": "Your previous response was empty. You MUST return a final user-facing response now based on your reasoning and the tool outputs already collected. If results are weak, explain limitations and give best-effort guidance. Do not call additional tools.",
             })
 
             forced_empty_json = await _call_follow_up(messages, tools, "none")
@@ -2509,7 +2502,7 @@ async def _chat_wrapper():
             timeout_finalize_requested = True
             messages.append({
               "role": "system",
-              "content": f"You have been working for about {int(soft_timeout_ms / 1000)} seconds. Provide the best possible final answer now using the tool results and errors already collected. Do not call additional tools unless absolutely necessary.",
+              "content": f"You are near the response timeout ({int(soft_timeout_ms / 1000)}s). You MUST return a final user-facing answer now based on your reasoning and the collected tool outputs/errors. Do not call additional tools.",
             })
 
           if timeout_finalize_requested and successful_tool_results and turns >= 3:
@@ -2546,7 +2539,7 @@ async def _chat_wrapper():
               timeout_finalize_requested = True
               messages.append({
                 "role": "system",
-                "content": "The previous model call timed out. Provide the best possible final answer now using the tool outputs already collected. Do not call additional tools.",
+                "content": "The previous model call timed out. You MUST return a final user-facing answer now using your reasoning and the tool outputs already collected. Do not call additional tools.",
               })
               forced_result_json = await _call_follow_up(messages, tools, "none")
               try:

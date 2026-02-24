@@ -443,11 +443,6 @@ def _normalize_search_payload(
         "results": compact_results,
     }
 
-    if kind == "datasets":
-        normalized["assistant_summary"] = _format_dataset_assistant_summary(
-            normalized, max_items=min(5, safe_limit)
-        )
-
     return normalized
 
 
@@ -565,9 +560,6 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
                 merged_results = _merge_unique_dataset_results(primary_list, enrichment_list)
                 reranked = _rerank_dataset_results(merged_results, query)
                 primary_result["results"] = reranked[: min(8, safe_limit)]
-                primary_result["assistant_summary"] = _format_dataset_assistant_summary(
-                    primary_result, max_items=min(5, safe_limit)
-                )
                 if _has_strong_match(primary_result["results"], query):
                     primary_result["enriched_with_query"] = term
                     break
@@ -601,9 +593,6 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
                 "fallback_from_query": query,
                 "fallback_terms_used": fallback_terms_used,
             }
-            aggregated["assistant_summary"] = _format_dataset_assistant_summary(
-                aggregated, max_items=min(5, safe_limit)
-            )
             return aggregated
 
     print(f"DEBUG: search_datasets no results for query='{query}'")
@@ -728,11 +717,13 @@ Use tools first whenever a user asks for archive results.
 - Use startup probe totals as your prior about likely matches.
 - Make up to four fallback calls, then provide a best-effort final answer and explicitly mention beta limitations.
 - If any dataset query already returns at least the requested number of results, stop calling tools and answer immediately.
-- Tool outputs are intentionally compact and may include an assistant_summary field; use that summary when finalizing under timeout/fallback.
+- Tool outputs are compact structured JSON objects. You must decide the response format from user intent (listing, comparison, recommendation, synthesis).
+- Do not default to a fixed template like "Here are up to N ..." unless the user explicitly asks for a list.
+- Startup probe lines below are context-only signals about index behavior; they are not mandatory query terms.
 Then provide a concise human summary with links/accessions whenever available.
 """
 )
 
-print("Beta API startup probe (minimal filters):")
+print("Startup probe snapshot (context only, not prescribed query terms):")
 for _line in _beta_probe_lines:
     print(f"- {_line}")
