@@ -1,6 +1,9 @@
 name: Chat Proxy Production Deploy
 
 on:
+  push:
+    branches:
+      - main
   pull_request:
     types: [closed]
     branches:
@@ -9,7 +12,7 @@ on:
 
 jobs:
   deploy-prod:
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     env:
       HYPHA_SERVER_URL: ${{ vars.HYPHA_SERVER_URL }}
@@ -45,6 +48,7 @@ jobs:
             --app-id "$PROD_APP_ID" \
             --non-fatal-start \
             --health-check \
+            --check-request-url \
             --model gpt-5-mini
 
       - name: Roll back to previous commit if deploy failed
@@ -55,6 +59,7 @@ jobs:
             --app-id "$PROD_APP_ID" \
             --non-fatal-start \
             --health-check \
+            --check-request-url \
             --model gpt-5-mini
 
       - name: Ensure production health
@@ -63,9 +68,9 @@ jobs:
             --app-id "$PROD_APP_ID" \
             --model gpt-5-mini \
             --timeout 120 \
-            --check-search \
-            --search-query "mouse tumor" \
-            --search-limit 5
+            --check-request-url \
+            --request-url "https://beta.bioimagearchive.org/search/search/fts?query=mouse%20OR%20tumor" \
+            --request-attempts 5
 
       - name: Compute merged branch app ids
         if: github.event_name == 'pull_request'
