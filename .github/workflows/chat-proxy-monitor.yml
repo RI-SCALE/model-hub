@@ -44,7 +44,6 @@ jobs:
             --timeout 120 \
             --check-request-url \
             --request-url "https://beta.bioimagearchive.org/search/search/fts?query=cancer" \
-            --search-limit 5
 
       - name: Notify Slack when health check fails
         if: steps.health.outcome == 'failure' && env.SLACK_WEBHOOK_URL != ''
