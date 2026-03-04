@@ -73,7 +73,7 @@ const About: React.FC = () => {
             className="h-16 object-contain"
           />
           <img 
-            src="/static/img/EuropeanFlag-Funded by the EU-POS.jpg" 
+            src="/static/img/eu-funded-flag.jpg"
             alt="EU Flag" 
             className="h-16 object-contain"
           />

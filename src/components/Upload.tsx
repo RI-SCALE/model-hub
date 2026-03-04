@@ -1,1505 +1,643 @@
-import React, { useState, useCallback, useEffect } from 'react';
-import { useDropzone } from 'react-dropzone';
-import JSZip from 'jszip';
-import Editor from '@monaco-editor/react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useHyphaStore } from '../store/hyphaStore';
-import axios from 'axios';
-import { LinearProgress } from '@mui/material';
-import yaml from 'js-yaml';
-import { Link, useNavigate } from 'react-router-dom';
-import RDFEditor from './RDFEditor';
-import gridBg from '../assets/grid.svg';
+import { Link } from 'react-router-dom';
 
-// Helper function to extract weight file paths from manifest
-const extractWeightFiles = (manifest: any): string[] => {
-  if (!manifest || !manifest.weights) return [];
-  
-  const weightFiles: string[] = [];
-  Object.entries(manifest.weights).forEach(([_, weightInfo]: [string, any]) => {
-    if (weightInfo && weightInfo.source) {
-      // Handle paths that might start with ./ or just be filenames
-      let path = weightInfo.source;
-      if (path.startsWith('./')) {
-        path = path.substring(2);
-      }
-      weightFiles.push(path);
-    }
-  });
-  
-  return weightFiles;
+const PARENT_ID = 'ri-scale/ai-model-hub';
+const SERVER_URL = 'https://hypha.aicell.io';
+
+interface ArtifactItem {
+  id: string;
+  alias: string;
+  manifest: {
+    name?: string;
+    description?: string;
+    type?: string;
+    tags?: string[];
+  };
+  git_url?: string;
+  created_at: number;
+  config?: Record<string, any>;
+}
+
+const CopyButton: React.FC<{ text: string; label?: string }> = ({ text, label = 'Copy' }) => {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      className={`px-3 py-1 rounded text-sm font-medium transition-colors ${
+        copied
+          ? 'bg-green-600 text-white'
+          : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+      }`}
+    >
+      {copied ? '✓ Copied' : label}
+    </button>
+  );
 };
 
-interface FileNode {
-  name: string;
-  path: string;
-  content?: string | ArrayBuffer;
-  isDirectory: boolean;
-  children?: FileNode[];
-  edited?: boolean;
-  size: number;
-  handle?: JSZip.JSZipObject;
-  loaded?: boolean;
-  file?: File;
+const CodeBlock: React.FC<{ code: string; onCopy?: () => void }> = ({ code }) => (
+  <div className="relative group">
+    <pre className="bg-gray-900 text-green-400 rounded-lg p-4 text-sm font-mono overflow-x-auto whitespace-pre-wrap break-all">
+      {code}
+    </pre>
+    <div className="absolute top-2 right-2">
+      <CopyButton text={code} />
+    </div>
+  </div>
+);
+
+interface CreateDialogProps {
+  onClose: () => void;
+  onCreate: (name: string, description: string) => Promise<void>;
+  creating: boolean;
 }
 
-interface Manifest {
-  version?: string;
-  [key: string]: any;
+const CreateDialog: React.FC<CreateDialogProps> = ({ onClose, onCreate, creating }) => {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [showCliInfo, setShowCliInfo] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    await onCreate(name.trim(), description.trim());
+  };
+
+  // Preview the alias slug
+  const aliasPreview = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div className="bg-white rounded-xl shadow-2xl p-8 w-full max-w-lg mx-4 max-h-[90vh] overflow-y-auto">
+        <h2 className="text-2xl font-bold text-gray-900 mb-2">Create New Artifact</h2>
+        <p className="text-gray-500 text-sm mb-6">
+          A Git repository will be created for your model. You can push files using Git and Git LFS.
+        </p>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Name <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="e.g. cellpose-v3-retrained"
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#f39200] focus:border-transparent"
+              required
+              autoFocus
+            />
+            {aliasPreview && (
+              <p className="text-xs text-gray-400 mt-1">
+                Repository ID: <code className="bg-gray-100 px-1 rounded">{aliasPreview}</code>
+              </p>
+            )}
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Description</label>
+            <textarea
+              value={description}
+              onChange={e => setDescription(e.target.value)}
+              placeholder="Brief description of your model..."
+              rows={3}
+              className="w-full border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#f39200] focus:border-transparent resize-none"
+            />
+          </div>
+
+          {/* hypha-cli collapsible info */}
+          <div className="border border-gray-200 rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setShowCliInfo(!showCliInfo)}
+              className="w-full flex items-center justify-between px-4 py-3 bg-gray-50 hover:bg-gray-100 text-sm font-medium text-gray-700 transition-colors"
+            >
+              <span className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                Prefer the command line? Use <code className="text-xs bg-white border border-gray-200 px-1 rounded">hypha-cli</code>
+              </span>
+              <svg
+                className={`w-4 h-4 text-gray-400 transition-transform ${showCliInfo ? 'rotate-180' : ''}`}
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {showCliInfo && (
+              <div className="px-4 py-4 bg-white space-y-3 text-sm text-gray-600">
+                <p>
+                  Install <a href="https://www.npmjs.com/package/hypha-cli" target="_blank" rel="noopener noreferrer" className="text-[#f39200] underline">hypha-cli</a>{' '}
+                  and create your artifact from the terminal:
+                </p>
+                <div className="bg-gray-900 text-green-400 rounded-lg p-3 font-mono text-xs space-y-1">
+                  <div className="text-gray-500"># Install once</div>
+                  <div>npm install -g hypha-cli</div>
+                  <div className="mt-2 text-gray-500"># Login and configure workspace</div>
+                  <div>hypha --server https://hypha.aicell.io login</div>
+                  <div className="mt-2 text-gray-500"># Create artifact with git storage</div>
+                  <div>hypha --server https://hypha.aicell.io \</div>
+                  <div>&nbsp;&nbsp;artifacts create {aliasPreview || 'my-model'} \</div>
+                  <div>&nbsp;&nbsp;--type model \</div>
+                  <div>&nbsp;&nbsp;--parent ri-scale/ai-model-hub</div>
+                  <div className="mt-2 text-gray-500"># Generate a push token (30 days)</div>
+                  <div>hypha --server https://hypha.aicell.io \</div>
+                  <div>&nbsp;&nbsp;token --expires-in 2592000</div>
+                </div>
+                <p className="text-xs text-gray-400">
+                  Note: Git storage is configured automatically when creating via this form. With the CLI, git storage must be enabled separately.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="submit"
+              disabled={creating || !name.trim()}
+              className="flex-1 bg-[#f39200] hover:bg-[#d97f00] disabled:bg-gray-300 text-white font-semibold py-2 rounded-lg transition-colors"
+            >
+              {creating ? 'Creating...' : 'Create Artifact'}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={creating}
+              className="flex-1 border border-gray-300 hover:bg-gray-50 text-gray-700 font-semibold py-2 rounded-lg transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+interface ArtifactCardProps {
+  artifact: ArtifactItem;
+  server: any;
+  expanded: boolean;
+  onToggle: () => void;
 }
 
-interface UploadStatus {
-  message: string;
-  severity: 'info' | 'success' | 'error';
-  progress?: number;
-}
+const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded, onToggle }) => {
+  const [gitAuthUrl, setGitAuthUrl] = useState<string | null>(null);
+  const [generatingToken, setGeneratingToken] = useState(false);
+  const [tokenExpiry, setTokenExpiry] = useState('7 days');
 
-interface ValidationResult {
-  success: boolean;
-  details: string;
-}
-
-interface TestResult {
-  name: string;
-  success: boolean;
-  details: Array<{
-    name: string;
-    status: string;
-    errors: Array<{
-      msg: string;
-      loc: string[];
-    }>;
-    warnings: Array<{
-      msg: string;
-      loc: string[];
-    }>;
-  }>;
-}
-
-type SupportedTextFiles = '.txt' | '.yml' | '.yaml' | '.json' | '.md' | '.py' | '.js' | '.ts' | '.jsx' | '.tsx' | '.css' | '.html' | '.ijm';
-type SupportedImageFiles = '.png' | '.jpg' | '.jpeg' | '.gif';
-
-// Universal binary file detection
-const isKnownTextFile = (filename: string): boolean => {
-  const textExtensions = [
-    '.txt', '.yml', '.yaml', '.json', '.xml', '.csv', '.tsv',
-    '.md', '.rst', '.tex',
-    '.py', '.js', '.ts', '.jsx', '.tsx', '.css', '.html', '.htm',
-    '.c', '.cpp', '.h', '.hpp', '.java', '.php', '.rb', '.go', '.rs',
-    '.sh', '.bash', '.zsh', '.fish', '.ps1', '.bat', '.cmd',
-    '.ijm', '.ini', '.cfg', '.conf', '.toml', '.log', '.sql', '.r', '.R', '.ipynb'
+  const expiryOptions = [
+    { label: '1 hour', seconds: 3600 },
+    { label: '24 hours', seconds: 86400 },
+    { label: '7 days', seconds: 604800 },
+    { label: '30 days', seconds: 2592000 },
   ];
-  return textExtensions.some(ext => filename.toLowerCase().endsWith(ext));
+
+  const generateAuthUrl = async (expiresIn: number, label: string) => {
+    if (!server || !artifact.git_url) return;
+    setGeneratingToken(true);
+    try {
+      const token = await server.generateToken({ expires_in: expiresIn });
+      const gitUrl = new URL(artifact.git_url);
+      gitUrl.username = 'git';
+      gitUrl.password = token;
+      setGitAuthUrl(gitUrl.toString());
+      setTokenExpiry(label);
+    } catch (err: any) {
+      alert('Failed to generate token: ' + err.message);
+    } finally {
+      setGeneratingToken(false);
+    }
+  };
+
+  const alias = artifact.alias || artifact.id.split('/').pop() || '';
+  const displayName = artifact.manifest.name || alias;
+  const publicGitUrl = artifact.git_url || `${SERVER_URL}/ri-scale/artifacts/${alias}/git`;
+  // Use alias as directory name (it matches what git clone will create)
+  const cloneDir = alias;
+
+  const cloneCommands = gitAuthUrl
+    ? `git clone ${gitAuthUrl} ${cloneDir}\ncd ${cloneDir}\ngit lfs install\n# Track large model files with LFS:\ngit lfs track "*.pt" "*.ckpt" "*.h5" "*.pkl" "*.pth" "*.safetensors" "*.bin"\ngit add .gitattributes\n# Add README and rdf.yaml:\necho "# ${displayName}" > README.md\ngit add README.md\ngit add .\ngit commit -m "Initial commit"\ngit push origin main`
+    : `git clone ${publicGitUrl} ${cloneDir}\ncd ${cloneDir}`;
+
+  return (
+    <div className="border border-gray-200 rounded-xl overflow-hidden hover:border-[#f39200] transition-colors">
+      <button
+        onClick={onToggle}
+        className="w-full text-left p-5 flex items-center justify-between gap-4 hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-gray-900 truncate">
+              {artifact.manifest.name || alias}
+            </span>
+            {artifact.git_url && (
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-purple-100 text-purple-700 rounded-full text-xs font-medium">
+                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M2.6 10.59L8.38 4.8l1.69 1.7c-.24.85.15 1.78.93 2.23v5.54c-.6.34-1 .99-1 1.73a2 2 0 0 0 2 2 2 2 0 0 0 2-2c0-.74-.4-1.39-1-1.73V9.41l2.07 2.09c-.07.15-.07.32-.07.5a2 2 0 0 0 2 2 2 2 0 0 0 2-2 2 2 0 0 0-2-2c-.2 0-.37.04-.54.1L11.08 6.98c.2-.87-.17-1.8-.98-2.23a2 2 0 0 0-2.74.76 2 2 0 0 0 .23 2.34L5.92 9.72l-1.7-1.7-1.62 2.57z"/>
+                </svg>
+                Git Storage
+              </span>
+            )}
+            {artifact.manifest.type && (
+              <span className="px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full text-xs font-medium">
+                {artifact.manifest.type}
+              </span>
+            )}
+          </div>
+          {artifact.manifest.description && (
+            <p className="text-sm text-gray-500 mt-1 truncate">{artifact.manifest.description}</p>
+          )}
+          <p className="text-xs text-gray-400 mt-1">
+            ID: <span className="font-mono">{alias}</span>
+            {' · '}
+            Created {new Date(artifact.created_at * 1000).toLocaleDateString()}
+          </p>
+        </div>
+        <svg
+          className={`w-5 h-5 text-gray-400 flex-shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+          fill="none" stroke="currentColor" viewBox="0 0 24 24"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+        </svg>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-gray-100 p-5 bg-gray-50 space-y-5">
+          {/* View artifact link */}
+          <div className="flex gap-3">
+            <Link
+              to={`/artifacts/${alias}`}
+              className="inline-flex items-center gap-1.5 text-sm text-[#f39200] hover:text-[#d97f00] font-medium"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+              </svg>
+              View artifact page
+            </Link>
+          </div>
+
+          {/* Public read-only URL */}
+          <div>
+            <h4 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
+              <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+              </svg>
+              Public clone URL (read-only)
+            </h4>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 bg-white border border-gray-200 rounded px-3 py-2 text-sm font-mono text-gray-700 truncate">
+                {publicGitUrl}
+              </code>
+              <CopyButton text={publicGitUrl} />
+            </div>
+          </div>
+
+          {/* Authenticated URL section */}
+          <div>
+            <h4 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
+              <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+              </svg>
+              Authenticated URL (read + push)
+            </h4>
+
+            {!gitAuthUrl ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-sm text-gray-500">Generate a time-limited token to push files:</span>
+                <div className="flex gap-2 flex-wrap">
+                  {expiryOptions.map(opt => (
+                    <button
+                      key={opt.label}
+                      onClick={() => generateAuthUrl(opt.seconds, opt.label)}
+                      disabled={generatingToken}
+                      className="px-3 py-1.5 bg-[#f39200] hover:bg-[#d97f00] disabled:bg-gray-300 text-white text-sm rounded-lg font-medium transition-colors"
+                    >
+                      {generatingToken ? 'Generating...' : `${opt.label} token`}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 p-2 bg-yellow-50 border border-yellow-200 rounded-lg">
+                  <svg className="w-4 h-4 text-yellow-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                  <span className="text-xs text-yellow-700">
+                    This URL contains your personal token (valid {tokenExpiry}). Keep it private and don't share it.
+                  </span>
+                  <button
+                    onClick={() => setGitAuthUrl(null)}
+                    className="ml-auto text-xs text-yellow-700 underline hover:no-underline"
+                  >
+                    Clear
+                  </button>
+                </div>
+                <div className="flex items-center gap-2">
+                  <code className="flex-1 bg-white border border-gray-200 rounded px-3 py-2 text-sm font-mono text-gray-700 truncate">
+                    {gitAuthUrl}
+                  </code>
+                  <CopyButton text={gitAuthUrl} />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Git commands */}
+          <div>
+            <h4 className="text-sm font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
+              <svg className="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M3 3h2v2H3V3zm4 0h2v2H7V3zm4 0h2v2h-2V3zm-8 4h2v2H3V7zm4 0h2v2H7V7zm4 0h2v2h-2V7zm4 0h2v2h-2V7zm0 4h2v2h-2v-2zm-4 0h2v2h-2v-2zM3 11h2v2H3v-2zm8 4h2v2h-2v-2zm4 0h2v2h-2v-2zM3 15h2v2H3v-2z"/>
+              </svg>
+              Git commands
+            </h4>
+            <CodeBlock code={cloneCommands} />
+            {!gitAuthUrl && (
+              <p className="text-xs text-gray-400 mt-2">
+                Generate an authenticated URL above to get push-enabled commands.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
 };
 
 interface UploadProps {
   artifactId?: string;
 }
 
-interface UploadArtifact {
-  id: string;
-  version: string;
-}
+const Upload: React.FC<UploadProps> = () => {
+  const { artifactManager, server, isLoggedIn, user } = useHyphaStore();
+  const [myArtifacts, setMyArtifacts] = useState<ArtifactItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-interface RdfManifest {
-  type: 'model' | 'application' | 'dataset';
-  name: string;
-  [key: string]: any;
-}
-
-const LARGE_FILE_THRESHOLD = 10 * 1024 * 1024; // 10MB
-
-const findEmoji = (config: any, type: string, name: string): string => {
-  const category = type === 'model' ? 'animal' :
-                  type === 'application' ? 'object' :
-                  type === 'dataset' ? 'fruit' : null;
-  
-  if (!category || !config?.id_parts?.[category]) return '🦒';
-  
-  const names = config.id_parts[category];
-  const emojis = config.id_parts[`${category}_emoji`];
-  const index = names.indexOf(name);
-  return index >= 0 ? emojis[index] : '🦒';
-};
-
-const extractNounFromId = (id: string): string => {
-  const parts = id.split('-');
-  const noun = parts[parts.length - 1];
-  return noun;
-};
-
-const readFileContent = (file: File): Promise<string | ArrayBuffer> => {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    
-    reader.onload = (event) => {
-      if (event.target?.result) {
-        resolve(event.target.result);
-      } else {
-        reject(new Error('Failed to read file content'));
-      }
-    };
-    
-    reader.onerror = () => {
-      reject(reader.error || new Error('Unknown error reading file'));
-    };
-    
-    if (isKnownTextFile(file.name)) {
-      reader.readAsText(file);
-    } else {
-      reader.readAsArrayBuffer(file);
+  const fetchMyArtifacts = useCallback(async () => {
+    if (!artifactManager || !user?.id) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const result = await artifactManager.list({
+        parent_id: PARENT_ID,
+        filters: { created_by: user.id },
+        limit: 100,
+        _rkwargs: true,
+      });
+      setMyArtifacts(Array.isArray(result) ? result : result?.items || []);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load artifacts');
+    } finally {
+      setLoading(false);
     }
-  });
-};
-
-const getMimeType = (filename: string): string => {
-  const ext = filename.split('.').pop()?.toLowerCase();
-  switch (ext) {
-    case 'html': return 'text/html';
-    case 'js': return 'application/javascript';
-    case 'css': return 'text/css';
-    case 'json': return 'application/json';
-    case 'png': return 'image/png';
-    case 'jpg': case 'jpeg': return 'image/jpeg';
-    case 'gif': return 'image/gif';
-    case 'svg': return 'image/svg+xml';
-    case 'txt': return 'text/plain';
-    case 'yaml': case 'yml': return 'application/x-yaml';
-    case 'md': return 'text/markdown';
-    default: return '';
-  }
-};
-
-const Upload: React.FC<UploadProps> = ({ artifactId }) => {
-  const [files, setFiles] = useState<FileNode[]>([]);
-  const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
-  const { artifactManager, isLoggedIn, server, user } = useHyphaStore();
-  const [uploadStatus, setUploadStatus] = useState<UploadStatus | null>(null);
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [showDragDrop, setShowDragDrop] = useState(!files.length);
-  const navigate = useNavigate();
-  const [isUploading, setIsUploading] = useState(false);
-  const [testResult, setTestResult] = useState<TestResult | null>(null);
-  const [isValidated, setIsValidated] = useState(false);
-  const [isUploaded, setIsUploaded] = useState(false);
-  const [uploadedArtifact, setUploadedArtifact] = useState<UploadArtifact | null>(null);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
-  const [generatedId, setGeneratedId] = useState<string | null>(null);
-  const [generatedEmoji, setGeneratedEmoji] = useState<string | null>(null);
-  const [imageDimensions, setImageDimensions] = useState<{ width: number; height: number } | null>(null);
+  }, [artifactManager, user?.id]);
 
   useEffect(() => {
-    if (artifactId) {
-      loadArtifactFiles();
+    if (isLoggedIn) {
+      fetchMyArtifacts();
     }
-  }, [artifactId]);
+  }, [isLoggedIn, fetchMyArtifacts]);
 
-  useEffect(() => {
-    if (files.some(f => f.edited)) {
-      setIsValidated(false);
-      setTestResult(null);
-    }
-  }, [files]);
+  const handleCreate = async (name: string, description: string) => {
+    if (!artifactManager) return;
+    setCreating(true);
+    try {
+      // Derive a clean alias slug from the name
+      const alias = name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 48);
 
-  const isTextFile = (filename: string): boolean => {
-    const textExtensions: SupportedTextFiles[] = [
-      '.txt', '.yml', '.yaml', '.json', '.md', '.py', 
-      '.js', '.ts', '.jsx', '.tsx', '.css', '.html',
-      '.ijm'
-    ];
-    return textExtensions.some(ext => filename.toLowerCase().endsWith(ext));
-  };
-
-  const isImageFile = (filename: string): boolean => {
-    const imageExtensions: SupportedImageFiles[] = ['.png', '.jpg', '.jpeg', '.gif'];
-    return imageExtensions.some(ext => filename.toLowerCase().endsWith(ext));
-  };
-
-  const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
-    const k = 1024;
-    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-  };
-
-  const getImageDataUrl = async (content: string | ArrayBufferLike, fileName: string): Promise<string> => {
-    if (typeof content === 'string') {
-      const encoder = new TextEncoder();
-      content = encoder.encode(content).buffer;
-    }
-
-    const extension = fileName.toLowerCase().split('.').pop() || '';
-    const bytes = new Uint8Array(content as ArrayBuffer);
-    const binary = bytes.reduce((data, byte) => data + String.fromCharCode(byte), '');
-    const base64 = btoa(binary);
-    
-    const mimeType = `image/${extension === 'jpg' ? 'jpeg' : extension}`;
-    return `data:${mimeType};base64,${base64}`;
-  };
-
-  const getEditorLanguage = (filename: string): string => {
-    const extension = filename.toLowerCase().split('.').pop() || '';
-    const languageMap: Record<string, string> = {
-      'py': 'python',
-      'js': 'javascript',
-      'ts': 'typescript',
-      'jsx': 'javascript',
-      'tsx': 'typescript',
-      'css': 'css',
-      'html': 'html',
-      'json': 'json',
-      'yml': 'yaml',
-      'yaml': 'yaml',
-      'md': 'markdown',
-      'txt': 'plaintext',
-      'ijm': 'javascript'
-    };
-    return languageMap[extension] || 'plaintext';
-  };
-
-  const getCommonPrefix = (nodes: FileNode[]): string => {
-    if (nodes.length === 0) return '';
-    const firstPath = nodes[0].path;
-    const parts = firstPath.split('/');
-    
-    // If the first file is at root, there is no common directory prefix
-    if (parts.length === 1) return '';
-    
-    const prefix = parts[0];
-    for (let i = 1; i < nodes.length; i++) {
-      if (!nodes[i].path.startsWith(prefix + '/')) {
-        return '';
-      }
-    }
-    return prefix;
-  };
-
-  const ensureStaticSiteConfig = async (nodes: FileNode[]) => {
-    const commonPrefix = getCommonPrefix(nodes);
-    const expectedIndexPath = commonPrefix ? `${commonPrefix}/index.html` : 'index.html';
-    const indexFile = nodes.find(file => file.path === expectedIndexPath);
-
-    if (!indexFile) return nodes;
-
-    let rdfFile = nodes.find(file => file.path.endsWith('rdf.yaml'));
-    
-    const relativeHtmlFiles = nodes
-      .filter(f => f.name.endsWith('.html'))
-      .map(f => {
-        let p = f.path;
-        if (commonPrefix && p.startsWith(commonPrefix + '/')) {
-          p = p.substring(commonPrefix.length + 1);
-        }
-        return p;
-      });
-
-    const viewConfig = {
-      root_directory: '.',
-      templates: relativeHtmlFiles,
-      template_engine: 'jinja2',
-      use_builtin_template: false,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "max-age=3600"
-      }
-    };
-
-    if (rdfFile) {
-      if (!rdfFile.loaded) {
-        try {
-           const content = await loadFileContent(rdfFile);
-           if (!content) return nodes;
-        } catch (e) {
-           console.warn("Failed to load rdf.yaml for static config update", e);
-           return nodes;
-        }
-      }
-
-      // Re-find the file object as it might have been updated by loadFileContent (state update is async/detached here)
-      // Actually loadFileContent updates state but returns content directly.
-      // But we are operating on 'nodes' array passed in.
-      const content = rdfFile.content || await loadFileContent(rdfFile);
-
-      if (content) {
-        try {
-          const contentStr = typeof content === 'string' 
-            ? content 
-            : new TextDecoder().decode(content);
-            
-          const manifest = yaml.load(contentStr) as RdfManifest;
-          
-          if (!manifest.config) manifest.config = {};
-          
-          if (!manifest.config.view_config) {
-            manifest.config.view_config = viewConfig;
-            
-            if (!manifest.tags) manifest.tags = [];
-            if (!manifest.tags.includes('static-site')) manifest.tags.push('static-site');
-            
-            const newContent = yaml.dump(manifest);
-            
-            return nodes.map(f => f.path === rdfFile.path ? { 
-               ...f, 
-               content: newContent,
-               edited: true,
-               loaded: true
-             } : f);
-          }
-        } catch (e) {
-          console.warn("Failed to update manifest with static site config", e);
-        }
-      }
-    } else {
-      const name = commonPrefix || 'New Application';
-      
-      const manifestContent = yaml.dump({
-        type: 'application',
-        name: name,
-        description: 'Static web application automatically generated.',
-        tags: ['static-site'],
-        config: {
-          view_config: viewConfig
-        }
-      });
-
-      const newRdfFile: FileNode = {
-        name: 'rdf.yaml',
-        path: commonPrefix ? `${commonPrefix}/rdf.yaml` : 'rdf.yaml',
-        content: manifestContent,
-        isDirectory: false,
-        size: manifestContent.length,
-        loaded: true,
-        edited: true
+      const manifest: Record<string, any> = {
+        name,
+        description,
+        documentation: 'README.md',
+        format_version: '0.1.0',
       };
-
-      return [...nodes, newRdfFile];
-    }
-    
-    return nodes;
-  };
-
-  const onDrop = useCallback(async (acceptedFiles: File[]) => {
-    const isZipFile = acceptedFiles.length === 1 && acceptedFiles[0].name.toLowerCase().endsWith('.zip');
-    if (isZipFile) {
-      await processZipFile(acceptedFiles[0]);
-    } else {
-      await processFilesAndFolders(acceptedFiles);
-    }
-  }, []);
-
-  const processZipFile = async (zipFile: File) => {
-    setUploadStatus({
-      message: 'Processing zip file...',
-      severity: 'info',
-      progress: 0
-    });
-    
-    const zip = new JSZip();
-    
-    try {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      const loadedZip = await zip.loadAsync(zipFile);
-      const fileNodes: FileNode[] = [];
-
-      const totalFiles = Object.keys(loadedZip.files).length;
-      let processedFiles = 0;
-
-      setUploadStatus({
-        message: 'Reading zip contents...',
-        severity: 'info',
-        progress: 5
-      });
-
-      for (const [path, file] of Object.entries(loadedZip.files)) {
-        if (!file.dir) {
-          const pathParts = path.split('/');
-          const fileName = pathParts[pathParts.length - 1];
-          
-          const fileNode: FileNode = {
-            name: fileName,
-            path: path,
-            isDirectory: false,
-            size: (file as any)._data ? (file as any)._data.uncompressedSize : 0,
-            handle: file
-          };
-
-          if (fileName === 'rdf.yaml') {
-            let content = await file.async('string');
-            if (user?.email) {
-              try {
-                const manifest = yaml.load(content) as RdfManifest;
-                if (!manifest.uploader?.email) {
-                  manifest.uploader = { ...manifest.uploader, email: user.email };
-                  content = yaml.dump(manifest);
-                }
-              } catch (e) {
-                console.warn("Failed to inject email into rdf.yaml", e);
-              }
-            }
-            fileNode.content = content;
-            fileNode.loaded = true;
-          }
-
-          fileNodes.push(fileNode);
-
-          processedFiles++;
-          setUploadStatus({
-            message: `Processing files... (${processedFiles}/${totalFiles})`,
-            severity: 'info',
-            progress: 5 + ((processedFiles / totalFiles) * 95)
-          });
-        }
-      }
-
-      
-      // Check for or create rdf.yaml for static sites
-      const updatedFiles = await ensureStaticSiteConfig(fileNodes);
-
-      setFiles(updatedFiles);
-      setShowDragDrop(false);
-      setUploadStatus({
-        message: `Successfully loaded ${totalFiles} files`,
-        severity: 'info',
-        progress: 100
-      });
-      
-      const rdfFile = updatedFiles.find(file => file.path.endsWith('rdf.yaml'));
-      if (rdfFile) {
-        handleFileSelect(rdfFile);
-      } else {
-        setUploadStatus({
-            message: 'Warning: No rdf.yaml file found. This is required for RI-SCALE Model Hub models.',
-            severity: 'error'
-        });
-      }
-    } catch (error) {
-      console.error('Error processing zip file:', error);
-      setUploadStatus({
-        message: 'Error processing zip file',
-        severity: 'error'
-      });
-    }
-  };
-
-  const processFilesAndFolders = async (acceptedFiles: File[]) => {
-    setUploadStatus({
-      message: 'Processing files...',
-      severity: 'info',
-      progress: 0
-    });
-
-    try {
-      const fileNodes: FileNode[] = [];
-      const totalFiles = acceptedFiles.length;
-      const isDirectoryUpload = acceptedFiles.length > 0 && 
-                               acceptedFiles[0].webkitRelativePath && 
-                               acceptedFiles[0].webkitRelativePath.includes('/');
-      
-      const sortedFiles = [...acceptedFiles].sort((a, b) => {
-        if (a.name === 'rdf.yaml') return -1;
-        if (b.name === 'rdf.yaml') return 1;
-        return 0;
-      });
-
-      for (let i = 0; i < sortedFiles.length; i++) {
-        const file = sortedFiles[i];
-        let relativePath = '';
-        
-        if (isDirectoryUpload && file.webkitRelativePath) {
-          relativePath = file.webkitRelativePath;
-        } else {
-          relativePath = file.name;
-        }
-        
-        const pathParts = relativePath.split('/');
-        const fileName = pathParts[pathParts.length - 1];
-        
-        const fileNode: FileNode = {
-          name: fileName,
-          path: relativePath,
-          isDirectory: false,
-          size: file.size,
-          file: file,
-          loaded: false
-        };
-
-        if (fileName === 'rdf.yaml') {
-          let content = await readFileContent(file);
-          if (user?.email && typeof content === 'string') {
-            try {
-              const manifest = yaml.load(content) as RdfManifest;
-              if (!manifest.uploader?.email) {
-                manifest.uploader = { ...manifest.uploader, email: user.email };
-                content = yaml.dump(manifest);
-              }
-            } catch (e) {
-              console.warn("Failed to inject email into rdf.yaml", e);
-            }
-          }
-          fileNode.content = content;
-          fileNode.loaded = true;
-        }
-
-        fileNodes.push(fileNode);
-
-        setUploadStatus({
-          message: `Processing files... (${i + 1}/${totalFiles})`,
-          severity: 'info',
-          progress: ((i + 1) / totalFiles) * 100
-        });
-      }
-
-      // Check for or create rdf.yaml for static sites
-      const updatedFiles = await ensureStaticSiteConfig(fileNodes);
-
-      setFiles(updatedFiles);
-      setShowDragDrop(false);
-      setUploadStatus({
-        message: `Successfully loaded ${updatedFiles.length} files`,
-        severity: 'info',
-        progress: 100
-      });
-      
-      const rdfFile = updatedFiles.find(file => file.path.endsWith('rdf.yaml'));
-      
-      if (rdfFile) {
-        handleFileSelect(rdfFile);
-      } else {
-        setUploadStatus({
-          message: 'Warning: No rdf.yaml file found. This is required for RI-SCALE Model Hub models.',
-          severity: 'error'
-        });
-      }
-    } catch (error) {
-      console.error('Error processing files:', error);
-      setUploadStatus({
-        message: 'Error processing files',
-        severity: 'error'
-      });
-    }
-  };
-
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ 
-    onDrop,
-    noClick: false,
-    noKeyboard: false,
-    noDrag: false,
-    multiple: true,
-    useFsAccessApi: false,
-    accept: {
-      '*': ['.*'],
-    }
-  });
-
-  const customInputProps = {
-    ...getInputProps(),
-    webkitdirectory: "true",
-    directory: "true",
-    mozdirectory: "true",
-    multiple: true
-  };
-
-  const fileInputProps = {
-    ...getInputProps(),
-    webkitdirectory: undefined,
-    directory: undefined,
-    mozdirectory: undefined
-  };
-
-  const fileInputRef = React.useRef<HTMLInputElement>(null);
-  const folderInputRef = React.useRef<HTMLInputElement>(null);
-
-  const handleFileButtonClick = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
-    }
-  };
-
-  const handleFolderButtonClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (folderInputRef.current) {
-      folderInputRef.current.click();
-    }
-  };
-
-  const handleZipButtonClick = (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (fileInputRef.current) {
-      fileInputRef.current.accept = '.zip';
-      fileInputRef.current.click();
-      setTimeout(() => {
-        if (fileInputRef.current) {
-          fileInputRef.current.accept = '';
-        }
-      }, 100);
-    }
-  };
-
-  const loadFileContent = async (file: FileNode) => {
-    if (file.loaded) return file.content;
-
-    try {
-      if (file.handle) {
-        const isBinary = !isKnownTextFile(file.name);
-        const content = await file.handle.async(isBinary ? 'arraybuffer' : 'string');
-        
-        setFiles(prevFiles => prevFiles.map(f => 
-          f.path === file.path 
-            ? { ...f, content, loaded: true }
-            : f
-        ));
-
-        return content;
-      } else if (file.file) {
-        const content = await readFileContent(file.file);
-        
-        setFiles(prevFiles => prevFiles.map(f => 
-          f.path === file.path 
-            ? { ...f, content, loaded: true }
-            : f
-        ));
-
-        return content;
-      } else if (artifactId) {
-        // Fetch from server for existing artifacts
-        try {
-          if (!artifactManager) throw new Error("Artifact manager not initialized");
-
-          setUploadStatus({
-            message: `Downloading ${file.name}...`,
-            severity: 'info'
-          });
-
-          // Use get_file to obtain the correct download URL
-          // This handles versioning and authentication correctly
-          const url = await artifactManager.get_file({
-            artifact_id: artifactId,
-            file_path: file.path,
-            _rkwargs: true
-          });
-
-          const isBinary = !isKnownTextFile(file.name);
-          const response = await axios.get(url, {
-            responseType: isBinary ? 'arraybuffer' : 'text'
-          });
-          
-          const content = response.data;
-          
-          setFiles(prevFiles => prevFiles.map(f => 
-            f.path === file.path 
-              ? { ...f, content, loaded: true }
-              : f
-          ));
-
-          setUploadStatus(null);
-          return content;
-        } catch (error) {
-          console.error(`Failed to download file ${file.path}:`, error);
-          throw error;
-        }
-      }
-      
-      return null;
-    } catch (error) {
-      console.error('Error loading file content:', error);
-      throw error;
-    }
-  };
-
-  const handleFileSelect = async (file: FileNode) => {
-    setImageUrl(null);
-    setSelectedFile(null);
-    setImageDimensions(null);
-
-    if (isTextFile(file.name) || isImageFile(file.name)) {
-      if (file.loaded && file.content) {
-        if (isImageFile(file.name)) {
-          const url = await getImageDataUrl(file.content, file.name);
-          setImageUrl(url);
-        }
-        setSelectedFile(file);
-      } else {
-        try {
-          setUploadStatus({
-            message: `Loading ${file.name}...`,
-            severity: 'info'
-          });
-
-          const content = await loadFileContent(file);
-          if (!content) return;
-          
-          const updatedFile = { ...file, content, loaded: true };
-          
-          if (isImageFile(file.name)) {
-            const url = await getImageDataUrl(content, file.name);
-            setImageUrl(url);
-          }
-
-          setSelectedFile(updatedFile);
-          setUploadStatus(null);
-        } catch (error) {
-          setUploadStatus({
-            message: `Error loading ${file.name}`,
-            severity: 'error'
-          });
-        }
-      }
-    } else {
-      setSelectedFile(file);
-    }
-  };
-
-  const handleEditorChange = (value: string | undefined, file: FileNode) => {
-    if (value === undefined || !file) return;
-    
-    const currentContent = typeof file.content === 'string' ? file.content : '';
-    if (value !== currentContent) {
-      setFiles(files.map(f => 
-        f.path === file.path 
-          ? { ...f, content: value, edited: true }
-          : f
-      ));
-    }
-  };
-
-  const handleValidationComplete = (result: ValidationResult) => {
-    setIsValidated(result.success);
-    setUploadStatus({
-      message: result.success ? 'Validation successful!' : 'Validation failed',
-      severity: result.success ? 'success' : 'error',
-      ...(uploadStatus?.progress !== undefined && { progress: uploadStatus.progress })
-    });
-    if (result.success && !uploadedArtifact && artifactId) {
-      setUploadedArtifact({
-        id: artifactId,
-        version: 'stage'
-      });
-    }
-  };
-
-  const handleUpload = async () => {
-    if (isUploading) return;
-    
-    if (!artifactManager || !user?.email) {
-      setUploadStatus({
-        message: 'Please login first',
-        severity: 'error'
-      });
-      return;
-    }
-
-    try {
-      setIsUploading(true);
-      
-      setUploadStatus({
-        message: 'Reading manifest file...',
-        severity: 'info'
-      });
-
-      const rdfFile = files.find(file => file.path.endsWith('rdf.yaml'));
-      if (!rdfFile) {
-        throw new Error('No rdf.yaml file found in the upload');
-      }
-
-      let manifest: RdfManifest;
-      let weightFilePaths: string[] = [];
-      
-      try {
-        let rdfContent: string;
-        if (!rdfFile.loaded || !rdfFile.content) {
-          if (rdfFile.handle) {
-            rdfContent = await rdfFile.handle.async('string');
-          } else if (rdfFile.file) {
-            rdfContent = await readFileContent(rdfFile.file) as string;
-          } else {
-            throw new Error('Cannot load rdf.yaml content');
-          }
-        } else {
-          rdfContent = typeof rdfFile.content === 'string' 
-            ? rdfFile.content
-            : new TextDecoder().decode(rdfFile.content);
-        }
-        
-        manifest = yaml.load(rdfContent) as RdfManifest;
-        weightFilePaths = manifest.type === 'model' ? extractWeightFiles(manifest) : [];
-
-        manifest.uploader = {
-          ...manifest.uploader,
-          email: user.email
-        };
-
-        const updatedContent = yaml.dump(manifest);
-        
-        const updatedFiles = files.map(file => 
-          file.path.endsWith('rdf.yaml')
-            ? { ...file, content: updatedContent }
-            : file
-        );
-        setFiles(updatedFiles);
-
-      } catch (error) {
-        console.error('Error parsing rdf.yaml:', error);
-        throw new Error('Invalid rdf.yaml format');
-      }
-
-      let aliasPattern: string;
-      switch (manifest.type) {
-        case 'model':
-          aliasPattern = '{animal_adjective}-{animal}';
-          break;
-        case 'application':
-          aliasPattern = '{object_adjective}-{object}';
-          break;
-        case 'dataset':
-          aliasPattern = '{fruit_adjective}-{fruit}';
-          break;
-        default:
-          aliasPattern = '{object_adjective}-{object}';
-      }
-
-      // Extract config from manifest if present, as it needs to be passed separately
-      const artifactConfig = manifest.config;
-      // We don't remove it from manifest to keep a record, or we could remove it.
-      // Usually it's better to keep it in manifest for reproducibility, but the server uses the separate config arg.
+      if (user?.email) manifest.uploader = { email: user.email };
 
       const artifact = await artifactManager.create({
-        parent_id: "ri-scale/ai-model-hub",
-        alias: aliasPattern,
-        type: manifest.type,
-        manifest: manifest,
-        config: artifactConfig,
-        stage: true,
+        alias,
+        parent_id: PARENT_ID,
+        type: 'model',
+        manifest,
+        config: { storage: 'git' },
+        stage: false,
         _rkwargs: true,
-        overwrite: true,
       });
 
-      const fullId = artifact.id;
-      const shortId = fullId.split('/').pop() || '';
-      setGeneratedId(shortId);
-
-      const noun = extractNounFromId(shortId);
-      const collection = await artifactManager.read({
-        artifact_id: 'ri-scale/ai-model-hub',
-        _rkwargs: true
-      });
-      const emoji = manifest.id_emoji || findEmoji(collection.config, manifest.type, noun);
-      setGeneratedEmoji(emoji);
-
-      const updatedManifest = {
-        ...manifest,
-        id: shortId,
-        id_emoji: emoji,
-        config: manifest.config ? {
-          ...manifest.config,
-          ...(manifest.config.bioimageio && {
-            ...manifest.config,
-            bioimageio: undefined
-          })
-        } : undefined
-      };
-
-      if (updatedManifest.config === undefined) {
-        delete updatedManifest.config;
-      }
-
-      const updatedFiles = files.map(file => {
-        if (file.path.endsWith('rdf.yaml')) {
-          const updatedContent = yaml.dump(updatedManifest, {
-            indent: 2,
-            lineWidth: -1,
-            noRefs: true,
-          });
-          return {
-            ...file,
-            content: updatedContent,
-            edited: true
-          };
-        }
-        return file;
-      });
-      setFiles(updatedFiles);
-
-      const updatedRdfFile = updatedFiles.find(file => file.path.endsWith('rdf.yaml'));
-      if (!updatedRdfFile) {
-        throw new Error('Failed to update rdf.yaml');
-      }
-
-      setUploadStatus({
-        message: 'Uploading updated manifest...',
-        severity: 'info',
-        progress: 0
-      });
-
-      await artifactManager.edit({
-        artifact_id: fullId,
-        manifest: updatedManifest,
-        stage: true,
-        _rkwargs: true
-      });
-
-      const commonPrefix = getCommonPrefix(updatedFiles);
-
-      for (let index = 0; index < updatedFiles.length; index++) {
-        const file = updatedFiles[index];
-        setUploadStatus({
-          message: `Uploading ${file.name}...`,
-          severity: 'info',
-          progress: ((index + 1) / (updatedFiles.length + 1)) * 100
-        });
-
-        try {
-          let content: string | ArrayBuffer | null = null;
-          let fileSize = 0;
-          let isLargeFile = false;
-          let fileObject: File | null = null;
-          
-          if (file.handle) {
-            const isBinary = !isKnownTextFile(file.name);
-            content = await file.handle.async(isBinary ? 'arraybuffer' : 'string');
-            fileSize = content instanceof ArrayBuffer ? content.byteLength : content.length;
-          } else if (file.file) {
-            fileObject = file.file;
-            fileSize = fileObject.size;
-            isLargeFile = fileSize > LARGE_FILE_THRESHOLD;
-            
-            if (!isLargeFile) {
-              if (!file.loaded || !file.content) {
-                content = await readFileContent(file.file);
-              } else {
-                content = file.content;
-              }
-            }
-          } else if (file.content) {
-            content = file.content;
-            fileSize = content instanceof ArrayBuffer ? content.byteLength : content.length;
-          }
-
-          const isWeightFile = weightFilePaths.some((weightPath: string) => {
-            const normalizedFilePath = file.path.startsWith('./') ? file.path.substring(2) : file.path;
-            return normalizedFilePath === weightPath || 
-                   normalizedFilePath.endsWith(`/${weightPath}`) ||
-                   weightPath.endsWith(`/${normalizedFilePath}`);
-          });
-          
-          let uploadPath = file.path;
-          if (commonPrefix && uploadPath.startsWith(commonPrefix + '/')) {
-            uploadPath = uploadPath.substring(commonPrefix.length + 1);
-          }
-          
-          const putConfig: {
-            artifact_id: any;
-            file_path: string;
-            download_weight?: number;
-            _rkwargs: boolean;
-          } = {
-            artifact_id: artifact.id,
-            file_path: uploadPath,
-            _rkwargs: true,
-          }
-          if (isWeightFile) {
-            putConfig.download_weight = 1;
-          }
-          const putUrl = await artifactManager.put_file(putConfig);
-          const mimeType = getMimeType(file.name);
-
-          if (isLargeFile && fileObject) {
-            await uploadLargeFile(putUrl, fileObject, fileSize, mimeType, (progress) => {
-              setUploadStatus({
-                message: `Uploading ${file.name}... (${Math.round(progress)}%)`,
-                severity: 'info',
-                progress: ((index + (progress / 100)) / updatedFiles.length) * 100
-              });
-            });
-          } else if (content) {
-            const blob = new Blob([content], { type: mimeType || "application/octet-stream" });
-            await axios.put(putUrl, blob, {
-              headers: {
-                "Content-Type": mimeType
-              },
-              onUploadProgress: (progressEvent) => {
-                const progress = progressEvent.total
-                  ? (progressEvent.loaded / progressEvent.total) * 100
-                  : 0;
-                
-                setUploadStatus({
-                  message: `Uploading ${file.name}...`,
-                  severity: 'info',
-                  progress: ((index + (progress / 100)) / updatedFiles.length) * 100
-                });
-              }
-            });
-          } else {
-            throw new Error(`No content available for ${file.name}`);
-          }
-
-          setFiles(prevFiles => prevFiles.map(f => 
-            f.path === file.path 
-              ? { ...f, content: undefined, loaded: false }
-              : f
-          ));
-
-        } catch (error) {
-          console.error(`Error uploading ${file.name}:`, error);
-          throw new Error(`Failed to upload ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        }
-      }
-
-      navigate(`/edit/${encodeURIComponent(artifact.id)}/stage`);
-
-    } catch (error) {
-      console.error('Upload failed:', error);
-      setUploadStatus({
-        message: error instanceof Error 
-          ? `Upload failed: ${error.message}` 
-          : 'Upload failed: Unknown error occurred',
-        severity: 'error'
-      });
-      setIsUploading(false);
+      setShowCreateDialog(false);
+      await fetchMyArtifacts();
+      setExpandedId(artifact.id || artifact.alias);
+    } catch (err: any) {
+      alert('Failed to create artifact: ' + (err.message || err));
+    } finally {
+      setCreating(false);
     }
-  };
-
-  const getStatusColor = (severity: 'info' | 'success' | 'error') => {
-    switch (severity) {
-      case 'info':
-        return 'text-blue-600';
-      case 'success':
-        return 'text-green-600';
-      case 'error':
-        return 'text-red-600';
-      default:
-        return 'text-gray-500';
-    }
-  };
-
-  const loadArtifactFiles = async () => {
-    if (!artifactManager || !artifactId) return;
-    
-    try {
-      const fileList = await artifactManager.list_files({
-        artifact_id: artifactId,
-        _rkwargs: true
-      });
-
-      const nodes: FileNode[] = await Promise.all(fileList.map(async (fileInfo: any) => {
-        const file = fileInfo as { type: string; name: string };
-        
-        if (file.type === 'file') {
-          return {
-            name: file.name,
-            path: file.name,
-            isDirectory: false,
-            size: 0,
-            loaded: false
-          };
-        }
-        return {
-          name: file.name,
-          path: file.name,
-          isDirectory: true,
-          size: 0,
-          children: []
-        };
-      }));
-
-      setFiles(nodes);
-      setShowDragDrop(false);
-
-      const rdfFile = nodes.find(file => file.path.endsWith('rdf.yaml'));
-      if (rdfFile) {
-        handleFileSelect(rdfFile);
-      }
-    } catch (error) {
-      console.error('Error loading artifact files:', error);
-    }
-  };
-
-  const uploadLargeFile = async (
-    url: string, 
-    file: File, 
-    fileSize: number,
-    mimeType: string,
-    onProgress: (progress: number) => void
-  ): Promise<void> => {
-    try {
-      const xhr = new XMLHttpRequest();
-      xhr.open('PUT', url, true);
-      xhr.setRequestHeader('Content-Type', mimeType || '');
-      
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable) {
-          const percentComplete = (event.loaded / event.total) * 100;
-          onProgress(percentComplete);
-        }
-      };
-      
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          console.log('Upload completed successfully');
-        } else {
-          throw new Error(`Upload failed with status ${xhr.status}`);
-        }
-      };
-      
-      xhr.onerror = () => {
-        throw new Error('Network error occurred during upload');
-      };
-      
-      xhr.send(file);
-      
-      return new Promise((resolve, reject) => {
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            resolve();
-          } else {
-            reject(new Error(`Upload failed with status ${xhr.status}`));
-          }
-        };
-        xhr.onerror = () => reject(new Error('Network error occurred during upload'));
-      });
-    } catch (error) {
-      console.error('Error during large file upload:', error);
-      throw error;
-    }
-  };
-
-  const checkImageDimensions = (url: string, fileName: string) => {
-    const img = new Image();
-    img.onload = () => {
-      setImageDimensions({ width: img.width, height: img.height });
-    };
-    img.src = url;
   };
 
   return (
-    <div className="flex flex-col">
-      {files.length > 0 && (
-        <button
-          onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-          className="lg:hidden p-2 rounded-md text-gray-500 hover:bg-gray-100"
-          aria-label="Toggle sidebar"
-        >
-          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            {isSidebarOpen ? (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            ) : (
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-            )}
-          </svg>
-        </button>
-      )}
-      
-      {showDragDrop && (
-        <div className="bg-white border-b border-gray-100">
-          <div className="p-6 text-center">
-            <h1 className="text-2xl font-bold text-gray-900">
-              Contribution
-            </h1>
-            <p className="mt-1 text-sm text-gray-500">
-              Upload and share your AI models with the research community.
-            </p>
-          </div>
-        </div>
-      )}
-
-      <div className="flex flex-1 overflow-hidden">
-        {files.length > 0 && (
-          <div className={`${
-            isSidebarOpen ? 'translate-x-0' : '-translate-x-full'
-          } lg:translate-x-0 w-80 bg-[#f9fafb] border-r border-gray-200 flex flex-col 
-          fixed lg:relative inset-y-0 
-          transition-transform duration-300 ease-in-out 
-          h-screen lg:h-[calc(100vh-64px)] z-40
-          overflow-hidden`}>
-            <div className="p-4 border-b border-gray-200 flex flex-col gap-2">
-              {generatedId ? (
-                <>
-                  <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-medium text-gray-900 truncate">
-                      {files.find(f => f.path.endsWith('rdf.yaml'))?.content && 
-                        (yaml.load(files.find(f => f.path.endsWith('rdf.yaml'))?.content as string) as RdfManifest)?.name || 'Untitled'}
-                    </h2>
-                    <span className="text-xs bg-blue-50 text-[#f39200] border border-[#f39200] px-2 py-1 rounded-full">
-                      stage
-                    </span>
-                  </div>
-                  <div className="text-xs text-gray-500 font-mono flex items-center gap-1">
-                    {generatedEmoji && (
-                      <span className="w-5 h-5 flex items-center justify-center bg-gray-100 rounded-full text-sm">
-                        {generatedEmoji}
-                      </span>
-                    )}
-                    ID: <span className="bg-gray-100 px-2 py-0.5 rounded">{generatedId}</span>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <h2 className="text-sm font-bold uppercase tracking-wider text-gray-500">
-                    Package Contents
-                  </h2>
-                </>
-              )}
+    <div className="min-h-screen bg-gray-50">
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200">
+        <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8">
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <div>
+              <h1 className="text-3xl font-bold text-gray-900">Contribute a Model</h1>
+              <p className="mt-2 text-gray-500 text-base">
+                Submit your AI models to the RI-SCALE model hub using Git and Git LFS.
+              </p>
             </div>
-
-            <div className="flex-1 overflow-y-auto min-h-[calc(100vh-200px)]">
-              <div className="py-2 h-full">
-                {files.map((file) => (
-                  <div
-                    key={file.path}
-                    onClick={() => handleFileSelect(file)}
-                    className={`cursor-pointer px-4 py-2.5 hover:bg-gray-100 transition-colors flex items-center gap-3 border-l-2
-                      ${selectedFile?.path === file.path ? 'bg-white border-[#f39200] text-gray-900' : 'border-transparent text-gray-600'}`}
-                  >
-                     <span className="flex-shrink-0">
-                      {file.name.endsWith('.yaml') || file.name.endsWith('.yml') ? (
-                        <span className="text-xs font-mono font-bold text-gray-400">YML</span>
-                      ) : file.name.match(/\.(png|jpg|jpeg|gif)$/i) ? (
-                         <span className="text-xs font-mono font-bold text-gray-400">IMG</span>
-                      ) : (
-                         <span className="text-xs font-mono font-bold text-gray-400">FILE</span>
-                      )}
-                    </span>
-
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
-                      <span className="truncate text-sm font-medium">
-                        {file.name}
-                      </span>
-                      {file.name === 'rdf.yaml' && (
-                         <span className="text-[#f39200] text-xs">★</span>
-                      )}
-                    </div>
-
-                    {file.edited && (
-                      <span className="text-[10px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded-full uppercase tracking-wider font-medium">
-                        edited
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div className="w-full flex flex-col overflow-hidden min-h-screen">
-          {files.length > 0 && (
-            <div className="border-b border-gray-200 bg-white sticky top-0 z-50">
-              <div className="p-2">
-                <div className="flex flex-col lg:flex-row lg:items-center gap-4">
-                  <div className="flex-grow min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {uploadStatus && (
-                        <>
-                          <span className="text-gray-400">•</span>
-                          <span className={`${getStatusColor(uploadStatus.severity)} text-sm font-medium truncate`}>
-                            {uploadStatus.message}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2 flex-shrink-0">
-                    {!uploadedArtifact && (
-                      <button
-                        onClick={handleUpload}
-                        disabled={isUploading || !isLoggedIn}
-                        className={`px-4 py-2 rounded-md font-bold text-sm transition-colors whitespace-nowrap flex items-center gap-2
-                          ${isUploading || !isLoggedIn
-                            ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                            : 'bg-[#f39200] text-white hover:bg-[#d98200]'}`}
-                      >
-                         {!isLoggedIn 
-                            ? 'Login to Upload'
-                            : isUploading 
-                              ? 'Uploading...' 
-                              : 'Upload Package'}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              {uploadStatus?.progress !== undefined && (
-                <div className="mt-2">
-                  <LinearProgress 
-                    variant="determinate" 
-                    value={uploadStatus.progress} 
-                    sx={{ 
-                      height: 2,
-                      borderRadius: 0,
-                      backgroundColor: '#f3f4f6',
-                      '& .MuiLinearProgress-bar': {
-                        backgroundColor: '#f39200'
-                      }
-                    }}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-
-          <div className="flex-1 overflow-auto min-h-[calc(100vh-145px)] bg-white">
-            {showDragDrop ? (
-              <div className="h-full flex items-center justify-center p-8">
-                <div className="mt-10 text-center max-w-2xl mx-auto w-full">
-                  {uploadStatus?.message && uploadStatus.severity === 'info' && uploadStatus.progress !== undefined ? (
-                    <div className="flex flex-col items-center justify-center mb-8">
-                       <div className="animate-spin rounded-full h-10 w-10 border-2 border-gray-100 border-t-[#f39200] mb-4"></div>
-                      <div className="text-lg font-medium text-gray-900 mb-2">{uploadStatus.message}</div>
-                      <div className="w-64 bg-gray-100 rounded-full h-1.5 mt-2">
-                        <div 
-                          className="bg-[#f39200] h-1.5 rounded-full transition-all duration-300" 
-                          style={{ width: `${uploadStatus.progress}%` }}
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <div 
-                      {...getRootProps()} 
-                      onClick={handleFolderButtonClick}
-                      className="border-2 border-dashed border-gray-300 rounded-xl p-16 hover:bg-gray-50 hover:border-[#f39200] transition-all cursor-pointer mb-8 group"
-                    >
-                      <input {...fileInputProps} ref={fileInputRef} />
-                      <input {...customInputProps} ref={folderInputRef} style={{ display: 'none' }} />
-                      
-                      <div className="mb-6">
-                        <div className="w-16 h-16 mx-auto mb-4 text-gray-300 group-hover:text-[#f39200] transition-colors">
-                          <svg className="w-full h-full" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                          </svg>
-                        </div>
-                        {isDragActive ? (
-                          <p className="text-xl text-[#f39200] font-bold">Drop your files here...</p>
-                        ) : (
-                          <>
-                            <p className="text-xl text-gray-900 font-bold mb-2">
-                              Drag & drop your model package content here
-                            </p>
-                            <p className="text-gray-500">or click to select a folder</p>
-                          </>
-                        )}
-                      </div>
-                      <div className="text-left text-sm text-gray-600 bg-gray-50 p-4 rounded-lg border border-gray-200 mt-8">
-                        <div className="flex flex-col sm:flex-row justify-center gap-3 mt-2">
-                          <button
-                            type="button"
-                            onClick={handleFolderButtonClick}
-                            className="px-4 py-2 bg-white border border-gray-300 rounded-md text-gray-700 font-medium hover:border-[#f39200] hover:text-[#f39200] transition-colors"
-                          >
-                             Select Folder (Recommended)
-                          </button>
-                          <button
-                            type="button"
-                            onClick={handleZipButtonClick}
-                            className="px-4 py-2 bg-white border border-gray-300 rounded-md text-gray-700 font-medium hover:border-[#f39200] hover:text-[#f39200] transition-colors"
-                          >
-                             Select Zip File
-                          </button>
-                        </div>
-                        <p className="mt-4 text-center text-xs text-gray-400">For large models (&gt;3GB), please upload a folder or individual files instead of ZIP.</p>
-                      </div>
-                    </div>
-                  )}
-
-                  {isLoggedIn && (
-                    <Link
-                      to="/my-artifacts"
-                      className="inline-flex items-center gap-2 text-gray-500 hover:text-[#f39200] transition-colors font-medium text-sm"
-                    >
-                      View My Artifacts →
-                    </Link>
-                  )}
-                </div>
-              </div>
-            ) : selectedFile ? (
-              <div className="h-full min-h-[calc(80vh-145px)]">
-                {isImageFile(selectedFile.name) ? (
-                  <div className="flex flex-col items-center justify-center p-8 bg-gray-50 h-full">
-                    <div className="relative w-full max-w-4xl bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
-                      <div className="absolute top-4 right-4 bg-black/80 text-white px-3 py-1 rounded text-xs font-mono z-10">
-                        {selectedFile.name.split('.').pop()?.toUpperCase()} • {imageDimensions ? `${imageDimensions.width}×${imageDimensions.height}` : '...'} • {formatFileSize(selectedFile.size)}
-                      </div>
-                      
-                      <div 
-                        className="relative aspect-video flex items-center justify-center p-4 bg-gray-50"
-                        style={{ backgroundImage: `url(${gridBg})` }}
-                      >
-                        {imageUrl ? (
-                          <img 
-                            src={imageUrl}
-                            alt={selectedFile.name}
-                            className="max-w-full max-h-[70vh] h-auto object-contain shadow-sm"
-                            onLoad={() => checkImageDimensions(imageUrl, selectedFile.name)}
-                          />
-                        ) : (
-                           <div className="animate-spin rounded-full h-8 w-8 border-2 border-gray-200 border-t-[#f39200]"></div>
-                        )}
-                      </div>
-                      
-                      <div className="px-4 py-3 bg-white border-t border-gray-100">
-                        <p className="text-sm font-mono text-gray-600 truncate">
-                          {selectedFile.name}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ) : selectedFile.name.endsWith('rdf.yaml') ? (
-                  <RDFEditor
-                    content={typeof selectedFile.content === 'string' ? selectedFile.content : ''}
-                    onChange={(value) => handleEditorChange(value, selectedFile)}
-                    readOnly={false}
-                    showModeSwitch={true}
-                  />
-                ) : isTextFile(selectedFile.name) ? (
-                  <div className="flex flex-col gap-4 h-full">
-                    <Editor
-                      height="100%"
-                      language={getEditorLanguage(selectedFile.name)}
-                      value={typeof selectedFile.content === 'string' ? selectedFile.content : ''}
-                      onChange={(value) => handleEditorChange(value, selectedFile)}
-                      options={{
-                        minimap: { enabled: false },
-                        scrollBeyondLastLine: true,
-                        wordWrap: 'on',
-                        lineNumbers: 'on',
-                        renderWhitespace: 'selection',
-                        folding: true,
-                        fontFamily: "'JetBrains Mono', 'Fira Code', Consolas, monospace",
-                        fontSize: 14,
-                      }}
-                    />
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-4 bg-gray-50">
-                    <div className="bg-white p-8 rounded-lg border border-gray-200 shadow-sm text-center">
-                      <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <span className="text-gray-400 font-bold text-xl">?</span>
-                      </div>
-                      <h3 className="font-medium text-gray-900 mb-2">Binary File</h3>
-                      <p className="text-sm text-gray-500 mb-4">{selectedFile.name}</p>
-                      <span className="inline-block px-3 py-1 bg-gray-100 rounded-full text-xs font-mono text-gray-600">
-                        {formatFileSize(selectedFile.size)}
-                      </span>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ) : (
-              <div className="h-full flex items-center justify-center text-gray-400 bg-gray-50">
-                <div className="text-center">
-                   <p>Select a file from the sidebar to view or edit</p>
-                </div>
-              </div>
+            {isLoggedIn && (
+              <button
+                onClick={() => setShowCreateDialog(true)}
+                className="inline-flex items-center gap-2 bg-[#f39200] hover:bg-[#d97f00] text-white font-semibold px-5 py-2.5 rounded-xl shadow-sm transition-colors"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Create New Artifact
+              </button>
             )}
           </div>
         </div>
       </div>
 
-      {isSidebarOpen && (
-        <div 
-          className="lg:hidden fixed inset-0 bg-black bg-opacity-50 z-30"
-          onClick={() => setIsSidebarOpen(false)}
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+
+        {/* How it works */}
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
+          <h2 className="text-lg font-semibold text-gray-900 mb-4">How it works</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {[
+              {
+                step: '1',
+                title: 'Create an artifact',
+                desc: 'Click "Create New Artifact" to register your model in the hub. A Git repository is created automatically.',
+                icon: (
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                ),
+              },
+              {
+                step: '2',
+                title: 'Generate credentials',
+                desc: 'Expand your artifact and generate a time-limited personal access token to push files.',
+                icon: (
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                  </svg>
+                ),
+              },
+              {
+                step: '3',
+                title: 'Push with Git & LFS',
+                desc: 'Use standard Git commands. Large files (weights, checkpoints) are handled automatically via Git LFS.',
+                icon: (
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                  </svg>
+                ),
+              },
+            ].map(({ step, title, desc, icon }) => (
+              <div key={step} className="flex gap-3">
+                <div className="flex-shrink-0 w-10 h-10 bg-[#f39200] bg-opacity-10 text-[#f39200] rounded-xl flex items-center justify-center">
+                  {icon}
+                </div>
+                <div>
+                  <p className="text-xs font-bold text-[#f39200] uppercase tracking-wide mb-0.5">Step {step}</p>
+                  <p className="font-semibold text-gray-900 text-sm">{title}</p>
+                  <p className="text-gray-500 text-xs mt-1">{desc}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Quick start snippet */}
+          <div className="mt-5 pt-5 border-t border-gray-100">
+            <p className="text-sm font-medium text-gray-700 mb-2">Quick start (after creating and getting your authenticated URL):</p>
+            <CodeBlock
+              code={`git clone https://git:<TOKEN>@hypha.aicell.io/ri-scale/artifacts/<your-alias>/git
+cd <your-alias>
+git lfs install
+git lfs track "*.pt" "*.ckpt" "*.h5" "*.pkl" "*.pth" "*.safetensors" "*.bin"
+git add .gitattributes
+# Add your model files, README.md, rdf.yaml, etc.
+git add .
+git commit -m "Initial model upload"
+git push origin main`}
+            />
+          </div>
+        </div>
+
+        {/* My Artifacts */}
+        <div>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-gray-900">My Artifacts</h2>
+            {isLoggedIn && (
+              <button
+                onClick={fetchMyArtifacts}
+                disabled={loading}
+                className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1.5"
+              >
+                <svg
+                  className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
+                  fill="none" stroke="currentColor" viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Refresh
+              </button>
+            )}
+          </div>
+
+          {!isLoggedIn ? (
+            <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+              <svg className="w-12 h-12 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+              <h3 className="font-semibold text-gray-700 mb-1">Login to contribute</h3>
+              <p className="text-sm text-gray-500">
+                Please log in to create artifacts and see your existing contributions.
+              </p>
+            </div>
+          ) : loading ? (
+            <div className="bg-white rounded-xl border border-gray-200 p-10 text-center">
+              <svg className="w-8 h-8 text-[#f39200] animate-spin mx-auto" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+              <p className="text-sm text-gray-500 mt-3">Loading your artifacts...</p>
+            </div>
+          ) : error ? (
+            <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
+              <p className="text-red-700 text-sm">{error}</p>
+              <button onClick={fetchMyArtifacts} className="mt-2 text-sm text-red-600 underline">
+                Try again
+              </button>
+            </div>
+          ) : myArtifacts.length === 0 ? (
+            <div className="bg-white rounded-xl border border-dashed border-gray-300 p-10 text-center">
+              <svg className="w-12 h-12 text-gray-300 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+              </svg>
+              <h3 className="font-semibold text-gray-700 mb-1">No artifacts yet</h3>
+              <p className="text-sm text-gray-500 mb-4">
+                You haven't contributed any models yet. Create your first artifact to get started.
+              </p>
+              <button
+                onClick={() => setShowCreateDialog(true)}
+                className="inline-flex items-center gap-2 bg-[#f39200] hover:bg-[#d97f00] text-white font-semibold px-5 py-2.5 rounded-xl transition-colors"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                Create New Artifact
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {myArtifacts.map(artifact => (
+                <ArtifactCard
+                  key={artifact.id}
+                  artifact={artifact}
+                  server={server}
+                  expanded={expandedId === artifact.id || expandedId === artifact.alias}
+                  onToggle={() =>
+                    setExpandedId(
+                      expandedId === artifact.id || expandedId === artifact.alias
+                        ? null
+                        : artifact.id
+                    )
+                  }
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {showCreateDialog && (
+        <CreateDialog
+          onClose={() => setShowCreateDialog(false)}
+          onCreate={handleCreate}
+          creating={creating}
         />
       )}
     </div>

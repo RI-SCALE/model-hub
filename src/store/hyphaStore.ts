@@ -160,7 +160,7 @@ export const useHyphaStore = create<HyphaState>((set, get) => ({
       const offset = (page - 1) * get().itemsPerPage;
       
       // Construct the base URL
-      let url = `https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?pagination=true&offset=${offset}&limit=${get().itemsPerPage}&stage=false`;
+      let url = `https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?pagination=true&offset=${offset}&limit=${get().itemsPerPage}&stage=false&order_by=last_modified>`;
       
       // Prepare filters object
       const filters: any = {};

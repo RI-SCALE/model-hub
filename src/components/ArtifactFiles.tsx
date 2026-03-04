@@ -69,7 +69,7 @@ const ArtifactFiles: React.FC<ArtifactFilesProps> = ({
       }
       
       const filesData = await response.json();
-      setFiles(filesData);
+      setFiles(Array.isArray(filesData) ? filesData : (filesData.items || []));
     } catch (err) {
       console.error('Error fetching files:', err);
       setError(err instanceof Error ? err.message : 'Failed to fetch files');

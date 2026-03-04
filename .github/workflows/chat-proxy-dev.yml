@@ -4,6 +4,7 @@ on:
   push:
     branches-ignore:
       - main
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -16,7 +17,7 @@ jobs:
       HYPHA_TOKEN: ${{ secrets.RI_SCALE_TOKEN }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Setup Python
         uses: actions/setup-python@v5

@@ -205,29 +205,12 @@ export default function LoginButton({ className = '' }: LoginButtonProps) {
               <div className="px-4 py-2 text-sm text-gray-700 border-b border-gray-200">
                 {user.email}
               </div>
-              {user.roles?.includes('admin') && (
-                <Link
-                  to="/admin"
-                  className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                  onClick={() => setIsDropdownOpen(false)}
-                >
-                  Admin Dashboard
-                </Link>
-              )}
               <Link
                 to="/my-artifacts"
                 className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
                 onClick={() => setIsDropdownOpen(false)}
               >
                 My Artifacts
-              </Link>
-              
-              <Link
-                to="/bioengine"
-                className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                onClick={() => setIsDropdownOpen(false)}
-              >
-                BioEngine
               </Link>
               
               {/* Add API Documentation link */}
