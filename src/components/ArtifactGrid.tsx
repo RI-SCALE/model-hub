@@ -8,10 +8,14 @@ import { Grid } from '@mui/material';
 interface ResourceGridProps {}
 
 const PHRASES = [
-  "nucleus segmentation",
-  "spot detection",
-  "cell painting",
-  "standardized AI"
+  "cell segmentation",
+  "climate downscaling",
+  "space debris detection",
+  "medical imaging AI",
+  "anomaly detection",
+  "SAR interferometry",
+  "histopathology grading",
+  "synthetic data generation",
 ];
 
 interface PaginationProps {
@@ -273,8 +277,8 @@ const ArtifactGrid: React.FC<ResourceGridProps> = () => {
               Discover <span className="text-ri-orange inline-block min-w-[200px]">{text}</span> models
             </h1>
             <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-              Access a curated collection of AI models designed for scientific workflows. 
-              Brought to you by <Link to="/about" className="text-black hover:text-ri-black font-semibold transition-colors">RI-SCALE</Link>.
+              Open AI models for biomedical imaging, climate science, space observation, and more —
+              from the <Link to="/about" className="text-black hover:text-ri-black font-semibold transition-colors">RI-SCALE</Link> European research infrastructure network.
             </p>
           </div>
 

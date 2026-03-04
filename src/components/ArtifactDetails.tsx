@@ -102,18 +102,21 @@ const ArtifactDetails = () => {
       if (selectedResource?.manifest.documentation) {
         try {
           const docUrl = resolveHyphaUrl(selectedResource.manifest.documentation, selectedResource.id, true);
-          
+
           const response = await fetch(docUrl);
-          const text = await response.text();
-          setDocumentation(text);
+          if (!response.ok) {
+            setDocumentation(null);
+          } else {
+            const text = await response.text();
+            setDocumentation(text);
+          }
         } catch (error) {
           console.error('Failed to fetch documentation:', error);
-          setDocumentation("Failed to fetch documentation.");
+          setDocumentation(null);
         }
       }
       else {
-        // No documentation found
-        setDocumentation("No documentation found.");
+        setDocumentation(null);
       }
     };
 
@@ -580,20 +583,20 @@ const ArtifactDetails = () => {
         {/* Left Column - Documentation */}
         <Grid item xs={12} md={8}>
           {/* Documentation Card */}
-          {documentation && (
-            <Card 
-              sx={{ 
-                mb: { xs: 1, sm: 2, md: 3 }, 
-                height: '100%',
-                backgroundColor: '#ffffff',
-                border: '1px solid #e5e7eb',
-                borderRadius: '8px',
-                boxShadow: 'none',
-              }}
-            >
-              <CardContent sx={{ p: 0 }}>
-                <Box 
-                  sx={{ 
+          <Card
+            sx={{
+              mb: { xs: 1, sm: 2, md: 3 },
+              height: '100%',
+              backgroundColor: '#ffffff',
+              border: '1px solid #e5e7eb',
+              borderRadius: '8px',
+              boxShadow: 'none',
+            }}
+          >
+            <CardContent sx={{ p: 0 }}>
+              {documentation ? (
+                <Box
+                  sx={{
                     padding: { xs: '12px', sm: '16px', md: '32px' },
                     '& pre': {
                       backgroundColor: '#f9fafb',
@@ -606,16 +609,33 @@ const ArtifactDetails = () => {
                     }
                   }}
                 >
-                  <ReactMarkdown 
+                  <ReactMarkdown
                     className="markdown-body"
                     remarkPlugins={[remarkGfm]}
                   >
                     {documentation}
                   </ReactMarkdown>
                 </Box>
-              </CardContent>
-            </Card>
-          )}
+              ) : (
+                <Box
+                  sx={{
+                    padding: { xs: '24px', sm: '32px', md: '48px' },
+                    textAlign: 'center',
+                    color: '#9ca3af',
+                  }}
+                >
+                  <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ margin: '0 auto 12px' }}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
+                  </svg>
+                  <p style={{ fontSize: '0.95rem', fontWeight: 500, color: '#6b7280', marginBottom: '4px' }}>No documentation available</p>
+                  <p style={{ fontSize: '0.8rem', color: '#9ca3af' }}>
+                    Add a <code style={{ background: '#f3f4f6', padding: '1px 4px', borderRadius: '3px' }}>README.md</code> to your artifact and set{' '}
+                    <code style={{ background: '#f3f4f6', padding: '1px 4px', borderRadius: '3px' }}>documentation: README.md</code> in <code style={{ background: '#f3f4f6', padding: '1px 4px', borderRadius: '3px' }}>rdf.yaml</code>.
+                  </p>
+                </Box>
+              )}
+            </CardContent>
+          </Card>
         </Grid>
 
         {/* Right Column */}

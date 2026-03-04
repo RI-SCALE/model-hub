@@ -230,7 +230,7 @@ const PartnerScroll: React.FC<PartnerScrollProps> = ({ onPartnerClick }) => {
 
   return (
     <div 
-      className="relative max-w-[1400px] mx-auto px-4 sm:px-6 mt-12 mb-8 group"
+      className="relative max-w-[1400px] mx-auto px-4 sm:px-6 mt-6 mb-4 group"
       onMouseEnter={handleContainerMouseEnter}
       onMouseLeave={handleContainerMouseLeave}
     >
@@ -238,14 +238,11 @@ const PartnerScroll: React.FC<PartnerScrollProps> = ({ onPartnerClick }) => {
       {/* Content with relative positioning */}
       <div className="relative">
         {/* Header */}
-        <div className="text-center mb-8">
-          <h2 className="text-3xl font-bold text-ri-black mb-2">
-            RI-SCALE Model Hub
+        <div className="text-center mb-4">
+          <h2 className="text-xl font-bold text-ri-black mb-1">
+            Our Partners
           </h2>
-          <div className="w-20 h-1 bg-ri-orange mx-auto rounded-full"></div>
-          <p className="mt-4 text-gray-500">
-            Supported by our amazing community partners in AI-powered research
-          </p>
+          <div className="w-12 h-0.5 bg-ri-orange mx-auto rounded-full"></div>
         </div>
 
         {/* Partners Container */}
@@ -265,7 +262,7 @@ const PartnerScroll: React.FC<PartnerScrollProps> = ({ onPartnerClick }) => {
           
           <div
             ref={scrollRef}
-            className="flex overflow-x-auto space-x-4 py-6 px-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
+            className="flex overflow-x-auto space-x-3 py-3 px-4 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]"
             onScroll={(e) => {
               const target = e.target as HTMLDivElement;
               setShowLeftArrow(target.scrollLeft > 0);
@@ -279,7 +276,7 @@ const PartnerScroll: React.FC<PartnerScrollProps> = ({ onPartnerClick }) => {
             {partners.map((partner, index) => (
               <div
                 key={`${partner.id}-${index}`}
-                className="flex flex-col items-center flex-shrink-0 w-24 sm:w-32 group/partner"
+                className="flex flex-col items-center flex-shrink-0 w-16 sm:w-20 group/partner"
                 onMouseEnter={(e) => handleMouseEnter(e, partner)}
                 onMouseLeave={handleMouseLeave}
               >
@@ -287,7 +284,7 @@ const PartnerScroll: React.FC<PartnerScrollProps> = ({ onPartnerClick }) => {
                   onClick={(e) => handlePartnerClick(e, partner)}
                   className="flex flex-col items-center w-full"
                 >
-                  <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-lg bg-gray-50 border border-gray-100 flex items-center justify-center p-2 group-hover/partner:border-ri-orange transition-colors duration-200">
+                  <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-lg bg-gray-50 border border-gray-100 flex items-center justify-center p-1.5 group-hover/partner:border-ri-orange transition-colors duration-200">
                     <img 
                       src={partner.icon} 
                       alt={partner.name} 
@@ -302,7 +299,7 @@ const PartnerScroll: React.FC<PartnerScrollProps> = ({ onPartnerClick }) => {
                       }}
                     />
                   </div>
-                  <span className="mt-2 text-xs sm:text-sm font-medium text-gray-500 group-hover/partner:text-ri-black transition-colors duration-200 text-center line-clamp-2">
+                  <span className="mt-1 text-xs font-medium text-gray-500 group-hover/partner:text-ri-black transition-colors duration-200 text-center line-clamp-1">
                     {partner.name}
                   </span>
                 </button>
