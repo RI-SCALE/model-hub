@@ -203,7 +203,7 @@ const Edit: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const info = await artifactManager.read({ artifact_id: fullArtifactId });
+      const info = await artifactManager.read({ artifact_id: fullArtifactId, _rkwargs: true });
       setArtifact(info);
     } catch (err: any) {
       setError(err.message || 'Failed to load artifact');
@@ -216,7 +216,7 @@ const Edit: React.FC = () => {
     if (!artifactManager || !artifactId) return;
     setFilesLoading(true);
     try {
-      const files = await artifactManager.list_files({ artifact_id: fullArtifactId });
+      const files = await artifactManager.list_files({ artifact_id: fullArtifactId, _rkwargs: true });
       setFileList(Array.isArray(files) ? files : []);
     } catch {
       setFileList([]);

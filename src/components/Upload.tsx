@@ -206,7 +206,7 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded,
     if (!server || !artifact.git_url) return;
     setGeneratingToken(true);
     try {
-      const token = await server.generateToken({ expires_in: expiresIn, _rkwargs: true });
+      const token = await server.generateToken({ expires_in: expiresIn });
       const gitUrl = new URL(artifact.git_url);
       gitUrl.username = 'git';
       gitUrl.password = token;
