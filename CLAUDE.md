@@ -115,3 +115,51 @@ python scripts/upload_sample.py         # Upload a sample artifact for testing
 - **OpenAI API** — LLM chat completions via chat-proxy
 - **BioImage Archive** — scientific image data source for BioImage Finder agent
 - **GitHub Pages** — static frontend hosting
+
+## Lessons Learned (Session Notes)
+
+### hypha-rpc `_rkwargs: true` — CRITICAL rule
+Every call to an artifact manager or server service that passes a **dict of named params** needs `_rkwargs: true` as the last key in the dict. Without it, the entire dict is sent as a single positional argument (bound to the first parameter, e.g. `alias`), silently breaking all real parameters.
+
+```typescript
+// ✅ CORRECT — multiple named params
+await artifactManager.list({ parent_id: ..., filters: ..., limit: ..., _rkwargs: true });
+await artifactManager.create({ alias: ..., type: ..., manifest: ..., _rkwargs: true });
+await artifactManager.read({ artifact_id: ..., _rkwargs: true });
+await artifactManager.list_files({ artifact_id: ..., _rkwargs: true });
+
+// ✅ EXCEPTION — server.generateToken passes a single dict as positional `config: TokenConfig`
+// Pydantic auto-converts the dict. NO _rkwargs here.
+await server.generateToken({ expires_in: expiresIn });
+```
+
+Reference: `../hypha/hypha/templates/ws/index.html` — the canonical JS client example.
+
+### REST API pagination wrapper
+The hypha REST endpoints (e.g. `/artifacts/{alias}/files/`, `/artifacts/{alias}/children`) return a **paginated wrapper**:
+```json
+{ "items": [...], "total": N, "offset": 0, "limit": 1000 }
+```
+Always unpack `.items`:  `const data = await res.json(); setFiles(data.items ?? data);`
+
+### Local dev serving — production build + npx serve
+- `npm start` (webpack-dev-server) fails through the svamp tunnel due to `ERR_CONTENT_DECODING_FAILED` — the tunnel proxy mangles gzip `Content-Encoding`.
+- **Workaround**: use a production build: `DISABLE_ESLINT_PLUGIN=true npm run build` then `nohup npx serve -s build -l 3000 --no-clipboard > /tmp/serve.log 2>&1 &`
+- The svamp tunnel is then started with `nohup svamp service expose model-hub --port 3000 > /tmp/tunnel.log 2>&1 &`
+- Use `nohup` (not bare `&`) so the process survives shell exit.
+
+### Stale tunnel backends cause intermittent failures
+`svamp service list` shows backend count. If >1, kill all and restart:
+```bash
+pkill -9 -f "svamp service expose model-hub"
+# wait for 0 backends, then restart
+```
+
+### Git push — use `fork` remote
+`git push origin` fails (no write access to `RI-SCALE/model-hub`). Always use:
+```bash
+git push fork feat/upload-git-workflow-ui-improvements
+```
+
+### Large static assets break tunnel loading
+PNG logos or images >1MB load very slowly through the tunnel (even if they technically work). Keep navbar logos ≤50KB. Use `sips -Z 800 original.png --out optimized.png` (macOS) to resize.
