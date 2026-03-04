@@ -11,8 +11,8 @@ except Exception:
     js = None
 
 
-BASE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts"
-BASE_IMAGE_SEARCH_URL = "https://beta.bioimagearchive.org/search/search/fts/image"
+BASE_SEARCH_URL = "https://beta.bioimagearchive.org/search/v1/search/fts"
+BASE_IMAGE_SEARCH_URL = "https://beta.bioimagearchive.org/search/v1/search/fts/image"
 STOPWORDS = {
     "and",
     "or",
@@ -66,7 +66,9 @@ def _query_terms(query: str) -> List[str]:
 
 def _dataset_relevance_score(item: Dict[str, Any], query_terms: List[str]) -> float:
     title = item.get("title") if isinstance(item.get("title"), str) else ""
-    description = item.get("description") if isinstance(item.get("description"), str) else ""
+    description = (
+        item.get("description") if isinstance(item.get("description"), str) else ""
+    )
     accession = item.get("accession") if isinstance(item.get("accession"), str) else ""
 
     title_lower = title.lower()
@@ -106,7 +108,9 @@ def _dataset_relevance_score(item: Dict[str, Any], query_terms: List[str]) -> fl
     return score
 
 
-def _rerank_dataset_results(items: List[Dict[str, Any]], query: str) -> List[Dict[str, Any]]:
+def _rerank_dataset_results(
+    items: List[Dict[str, Any]], query: str
+) -> List[Dict[str, Any]]:
     terms = _query_terms(query)
     if not terms:
         return items
@@ -273,7 +277,9 @@ def _compact_dataset_result(item: Dict[str, Any]) -> Dict[str, Any]:
     score = score_value if isinstance(score_value, (int, float)) else None
     compact: Dict[str, Any] = {
         "title": _short_text(item.get("title", "Untitled"), DATASET_TITLE_MAX_LEN),
-        "accession": item.get("accession") if isinstance(item.get("accession"), str) else "",
+        "accession": (
+            item.get("accession") if isinstance(item.get("accession"), str) else ""
+        ),
         "url": item.get("url") if isinstance(item.get("url"), str) else None,
         "description": (
             _short_text(item.get("description"), DATASET_DESCRIPTION_MAX_LEN)
@@ -281,7 +287,11 @@ def _compact_dataset_result(item: Dict[str, Any]) -> Dict[str, Any]:
             else None
         ),
         "doi": item.get("doi") if isinstance(item.get("doi"), str) else None,
-        "release_date": item.get("release_date") if isinstance(item.get("release_date"), str) else None,
+        "release_date": (
+            item.get("release_date")
+            if isinstance(item.get("release_date"), str)
+            else None
+        ),
         "score": score,
     }
     return compact
@@ -369,8 +379,12 @@ def _compact_image_result(item: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "title": _short_text(item.get("title", "Untitled"), IMAGE_TITLE_MAX_LEN),
         "id": item.get("id") if isinstance(item.get("id"), str) else "",
-        "accession": item.get("accession") if isinstance(item.get("accession"), str) else "",
-        "study_url": item.get("study_url") if isinstance(item.get("study_url"), str) else None,
+        "accession": (
+            item.get("accession") if isinstance(item.get("accession"), str) else ""
+        ),
+        "study_url": (
+            item.get("study_url") if isinstance(item.get("study_url"), str) else None
+        ),
         "file_pattern": (
             _short_text(item.get("file_pattern"), IMAGE_FILE_PATTERN_MAX_LEN)
             if isinstance(item.get("file_pattern"), str)
@@ -380,7 +394,9 @@ def _compact_image_result(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _format_dataset_assistant_summary(payload: Dict[str, Any], max_items: int = 5) -> str:
+def _format_dataset_assistant_summary(
+    payload: Dict[str, Any], max_items: int = 5
+) -> str:
     results = payload.get("results")
     result_list = results if isinstance(results, list) else []
     if not result_list:
@@ -394,8 +410,12 @@ def _format_dataset_assistant_summary(payload: Dict[str, Any], max_items: int = 
     for idx, entry in enumerate(result_list[:max_items], start=1):
         if not isinstance(entry, dict):
             continue
-        title = entry.get("title") if isinstance(entry.get("title"), str) else "Untitled"
-        accession = entry.get("accession") if isinstance(entry.get("accession"), str) else ""
+        title = (
+            entry.get("title") if isinstance(entry.get("title"), str) else "Untitled"
+        )
+        accession = (
+            entry.get("accession") if isinstance(entry.get("accession"), str) else ""
+        )
         url = entry.get("url") if isinstance(entry.get("url"), str) else None
         score = entry.get("score")
         score_part = f" (score {score:.2f})" if isinstance(score, (int, float)) else ""
@@ -412,7 +432,9 @@ def _format_dataset_assistant_summary(payload: Dict[str, Any], max_items: int = 
     if isinstance(total, int):
         lines.append(f"(Total hits reported by API: {total})")
     lines.append("")
-    lines.append("Note: BioImage Archive beta search can be incomplete or intermittent.")
+    lines.append(
+        "Note: BioImage Archive beta search can be incomplete or intermittent."
+    )
     return "\n".join(lines)
 
 
@@ -490,7 +512,7 @@ async def _search_via_proxy(kind: str, query: str, limit: int) -> Dict[str, Any]
 def _fallback_terms_from_query(query: str) -> List[str]:
     terms: List[str] = []
     for part in re.split(r"\bAND\b|\bOR\b", query, flags=re.IGNORECASE):
-        candidate = part.strip().strip('"\'()[]{}')
+        candidate = part.strip().strip("\"'()[]{}")
         if len(candidate) < 2:
             continue
         if candidate.lower() in {"and", "or", "not"}:
@@ -555,7 +577,10 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
     safe_limit = max(1, int(limit))
     print(f"DEBUG: search_datasets primary query='{query}' limit={safe_limit}")
     primary_result = await _search_datasets_once(query, safe_limit)
-    if isinstance(primary_result.get("total"), int) and primary_result.get("total", 0) > 0:
+    if (
+        isinstance(primary_result.get("total"), int)
+        and primary_result.get("total", 0) > 0
+    ):
         primary_items = primary_result.get("results")
         primary_list = primary_items if isinstance(primary_items, list) else []
         print(
@@ -571,7 +596,9 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
                 enrichment_list = (
                     enrichment_items if isinstance(enrichment_items, list) else []
                 )
-                merged_results = _merge_unique_dataset_results(primary_list, enrichment_list)
+                merged_results = _merge_unique_dataset_results(
+                    primary_list, enrichment_list
+                )
                 reranked = _rerank_dataset_results(merged_results, query)
                 primary_result["results"] = reranked[: min(8, safe_limit)]
                 if _has_strong_match(primary_result["results"], query):
@@ -591,7 +618,9 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
             fallback_items = fallback_result.get("results")
             fallback_list = fallback_items if isinstance(fallback_items, list) else []
             if fallback_list:
-                merged_results = _merge_unique_dataset_results(merged_results, fallback_list)
+                merged_results = _merge_unique_dataset_results(
+                    merged_results, fallback_list
+                )
                 fallback_terms_used.append(term)
                 print(
                     f"DEBUG: search_datasets fallback query returned total={fallback_result.get('total', 0)}"
@@ -676,40 +705,6 @@ def explain_advanced_query_syntax() -> str:
     )
 
 
-def _sample_titles(items: List[Dict[str, Any]], max_items: int = 3) -> List[str]:
-    titles: List[str] = []
-    for item in items[:max_items]:
-        title = item.get("title")
-        if isinstance(title, str) and title.strip():
-            titles.append(title.strip())
-    return titles
-
-
-async def _probe_beta_index() -> List[str]:
-    probes = [
-        ("datasets", "tumor", search_datasets),
-        ("datasets", "mouse", search_datasets),
-        ("datasets", "cancer", search_datasets),
-        ("images", "tumor", search_images),
-    ]
-    lines: List[str] = []
-    for kind, query, fn in probes:
-        try:
-            payload = await fn(query, limit=3)
-            total = payload.get("total", 0)
-            total_int = total if isinstance(total, int) else 0
-            results = payload.get("results")
-            top_results = results if isinstance(results, list) else []
-            titles = _sample_titles(top_results)
-            lines.append(f"{kind}:{query} -> total={total_int}, sample_titles={titles}")
-        except Exception as exc:
-            lines.append(f"{kind}:{query} -> error={exc}")
-    return lines
-
-
-_beta_probe_lines = await _probe_beta_index()
-
-
 print(
     """
 You are the RI-SCALE BioImage Finder.
@@ -720,24 +715,18 @@ You can call these utility functions directly:
 - explain_advanced_query_syntax()
 
 Use tools first whenever a user asks for archive results.
-- The beta index is limited/incomplete, so infer likely terms from startup probe output.
 - When querying based on the user's prompt, start very briefly.
+- The beta index is limited/incomplete, so if you get no results, distill the user's query to common terms like "tumor", "cancer", "microscopy", "human", "fluorescence", "confocal", "segmentation", "mouse", or "organoid".
 - Prefer OR-style brief queries first (for example: "mouse OR tumor").
 - For multi-concept dataset requests (for example "mouse tumor"), run at least two dataset tool calls even if the first call returns enough results.
-- A good default sequence is: (1) broad OR query, then (2) one high-prior single-term query from startup probe totals.
+- A good default sequence is: (1) broad OR query, then (2) one high-prior single-term query.
 - If a follow-up model/proxy call times out after tool results already exist, ignore that transient timeout and finalize using available tool results; do not mention backend/proxy timeouts to the user.
 - If an OR query returns no dataset results, do not switch to AND. Immediately try single-term fallbacks.
 - If queries fail repeatedly or are empty, simplify to single-term fallbacks ("mouse", "tumor", "cancer", "neuroblastoma").
-- Use startup probe totals as your prior about likely matches.
 - Make up to four fallback calls, then provide a best-effort final answer and explicitly mention beta limitations.
 - If any dataset query already returns at least the requested number of results, stop calling tools and answer immediately.
 - Tool outputs are compact structured JSON objects. You must decide the response format from user intent (listing, comparison, recommendation, synthesis).
 - Do not default to a fixed template like "Here are up to N ..." unless the user explicitly asks for a list.
-- Startup probe lines below are context-only signals about index behavior; they are not mandatory query terms.
 Then provide a concise human summary with links/accessions whenever available.
 """
 )
-
-print("Startup probe snapshot (context only, not prescribed query terms):")
-for _line in _beta_probe_lines:
-    print(f"- {_line}")
