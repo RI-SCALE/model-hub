@@ -206,7 +206,7 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded,
     if (!server || !artifact.git_url) return;
     setGeneratingToken(true);
     try {
-      const token = await server.generateToken({ expires_in: expiresIn });
+      const token = await server.generateToken({ expires_in: expiresIn, _rkwargs: true });
       const gitUrl = new URL(artifact.git_url);
       gitUrl.username = 'git';
       gitUrl.password = token;
@@ -396,6 +396,7 @@ const Upload: React.FC<UploadProps> = () => {
         parent_id: PARENT_ID,
         filters: { created_by: user.id },
         limit: 100,
+        _rkwargs: true,
       });
       setMyArtifacts(Array.isArray(result) ? result : result?.items || []);
     } catch (err: any) {
@@ -437,6 +438,7 @@ const Upload: React.FC<UploadProps> = () => {
         manifest,
         config: { storage: 'git' },
         stage: false,
+        _rkwargs: true,
       });
 
       setShowCreateDialog(false);
