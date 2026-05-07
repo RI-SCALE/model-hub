@@ -2729,8 +2729,19 @@ await _chat_wrapper()
     }
   };
 
+  const ImageBlock = ({ src, alt }: any) => (
+    <img
+      src={src}
+      alt={alt || ''}
+      className="max-w-full rounded-lg border border-gray-200 my-2 shadow-sm"
+      style={{ maxHeight: '400px', objectFit: 'contain' }}
+      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+    />
+  );
+
   const markdownComponents = {
     code: CodeBlock,
+    img: ImageBlock,
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {

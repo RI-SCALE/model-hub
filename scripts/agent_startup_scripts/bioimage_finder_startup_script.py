@@ -245,6 +245,15 @@ def _dataset_result_from_hit(item: Dict[str, Any]) -> Dict[str, Any]:
         else None
     )
 
+    thumbnail_url = None
+    for ds in source_payload.get("dataset", []):
+        if not isinstance(ds, dict):
+            continue
+        uris = ds.get("example_image_uri", [])
+        if isinstance(uris, list) and uris and isinstance(uris[0], str):
+            thumbnail_url = uris[0]
+            break
+
     return {
         "title": _short_text(title, DATASET_TITLE_MAX_LEN),
         "accession": accession or "",
@@ -268,6 +277,7 @@ def _dataset_result_from_hit(item: Dict[str, Any]) -> Dict[str, Any]:
             if isinstance(source_payload.get("release_date"), str)
             else None
         ),
+        "thumbnail_url": thumbnail_url,
         "score": item.get("_score"),
     }
 
@@ -290,6 +300,11 @@ def _compact_dataset_result(item: Dict[str, Any]) -> Dict[str, Any]:
         "release_date": (
             item.get("release_date")
             if isinstance(item.get("release_date"), str)
+            else None
+        ),
+        "thumbnail_url": (
+            item.get("thumbnail_url")
+            if isinstance(item.get("thumbnail_url"), str)
             else None
         ),
         "score": score,
@@ -727,6 +742,7 @@ Use tools first whenever a user asks for archive results.
 - If any dataset query already returns at least the requested number of results, stop calling tools and answer immediately.
 - Tool outputs are compact structured JSON objects. You must decide the response format from user intent (listing, comparison, recommendation, synthesis).
 - Do not default to a fixed template like "Here are up to N ..." unless the user explicitly asks for a list.
+- When a dataset result has a non-null `thumbnail_url`, include it in your response as a Markdown image: `![Preview of <title>](<thumbnail_url>)`. Show at most 3 thumbnails per response to avoid clutter.
 Then provide a concise human summary with links/accessions whenever available.
 """
 )
