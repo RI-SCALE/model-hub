@@ -2026,8 +2026,28 @@ import traceback
 import inspect
 import base64
 
+# Accumulate inline images extracted from tool results (bypasses LLM context limit)
+_pending_images = []
+
+import re as _re
+_BASE64_IMG_RE = _re.compile(r'!\[[^\]]*\]\(data:image/[^;]+;base64,[A-Za-z0-9+/=]+\)')
+
+def _extract_pending_images(text: str) -> str:
+    """Remove base64 image markdown from text, stash images in _pending_images."""
+    global _pending_images
+    matches = _BASE64_IMG_RE.findall(text)
+    for m in matches:
+        _pending_images.append(m)
+    return _BASE64_IMG_RE.sub('', text).strip()
+
 # Helper to send response safely
 def send_response(data):
+    global _pending_images
+    if isinstance(data, dict) and isinstance(data.get('text'), str) and _pending_images:
+        imgs = '\n\n'.join(_pending_images)
+        _pending_images = []
+        data = dict(data)
+        data['text'] = data['text'].rstrip() + '\n\n' + imgs
     print(f"__RESPONSE_START__:{json.dumps(data)}")
 
 _EXCLUDED_TOOL_NAMES = {
@@ -2506,7 +2526,7 @@ async def _chat_wrapper():
                     function_response = function_to_call(**function_args)
                   tool_result_cache[cache_key] = function_response
 
-                function_response_text = str(function_response)
+                function_response_text = _extract_pending_images(str(function_response))
                 successful_tool_calls += 1
                 tool_success_this_turn += 1
 
