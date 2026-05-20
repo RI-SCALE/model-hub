@@ -1,3 +1,4 @@
+import base64
 import json
 import logging
 import os
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _client: AsyncOpenAI | None = None
-_DEFAULT_ALLOWED_HOSTS = "beta.bioimagearchive.org,www.ebi.ac.uk"
+_DEFAULT_ALLOWED_HOSTS = "beta.bioimagearchive.org,www.ebi.ac.uk,uk1s3.embassy.ebi.ac.uk,livingobjects.ebi.ac.uk"
 
 
 def _allowed_hosts() -> set[str]:
@@ -153,6 +154,9 @@ async def resolve_url(
             result["json"] = response.json()
         except Exception:
             result["text"] = response.text
+    elif content_type.lower().startswith("image/") or "octet-stream" in content_type.lower():
+        result["base64"] = base64.b64encode(response.content).decode("ascii")
+        result["content_type"] = content_type
     else:
         result["text"] = response.text
 
