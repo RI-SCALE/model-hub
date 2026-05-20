@@ -1,3 +1,7 @@
+import micropip
+
+await micropip.install(["hypha-rpc", "pillow"])
+
 import json
 import re
 from typing import Any, Dict, List
@@ -657,13 +661,22 @@ async def search_datasets(query: str, limit: int = 10) -> Dict[str, Any]:
     return primary_result
 
 
-async def search_images(query: str, limit: int = 10) -> Dict[str, Any]:
+async def search_images(
+    query: str,
+    limit: int = 10,
+    scientific_name: str | None = None,
+    imaging_method: str | None = None,
+) -> Dict[str, Any]:
     """
-    Search BioImage Archive images endpoint by full-text query.
+    Search BioImage Archive images endpoint by full-text query with optional filters.
 
     Args:
         query: User search text for image-level index.
         limit: Maximum number of hits to return in the summarized output.
+        scientific_name: Filter by organism scientific name, e.g. "drosophila melanogaster",
+            "homo sapiens", "mus musculus". Case-insensitive.
+        imaging_method: Filter by imaging modality, e.g. "confocal microscopy",
+            "fluorescence microscopy", "bright-field microscopy". Case-insensitive.
 
     Returns:
         Dictionary with request URL, total count, and top results.
@@ -675,15 +688,31 @@ async def search_images(query: str, limit: int = 10) -> Dict[str, Any]:
             raise RuntimeError(proxied["error"])
         return _normalize_search_payload("images", query, safe_limit, proxied)
 
-    url = _build_url(BASE_IMAGE_SEARCH_URL, query)
+    params: Dict[str, Any] = {"query": quote(query, safe='"()[]{}:*?+-/\\')}
+    if scientific_name:
+        params["scientific_name"] = scientific_name
+    if imaging_method:
+        params["imaging_method"] = imaging_method
+    param_str = "&".join(f"{k}={quote(str(v), safe='')}" for k, v in params.items())
+    url = f"{BASE_IMAGE_SEARCH_URL}?{param_str}"
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(url)
         response.raise_for_status()
         payload = response.json()
 
     hits, total = _extract_hits_and_total(payload)
-    top_hits: List[Dict[str, Any]] = []
 
+    # Extract available facet values to help with follow-up queries
+    facets = payload.get("facets", {})
+    available_organisms = [
+        b["key"] for b in facets.get("scientific_name", {}).get("buckets", [])[:10]
+    ]
+    available_methods = [
+        b["key"] for b in facets.get("imaging_method", {}).get("buckets", [])[:10]
+    ]
+
+    top_hits: List[Dict[str, Any]] = []
     for item in hits[: max(1, safe_limit)]:
         if isinstance(item, dict):
             top_hits.append(_image_result_from_hit(item))
@@ -693,8 +722,131 @@ async def search_images(query: str, limit: int = 10) -> Dict[str, Any]:
         "url": url,
         "total": total,
         "results": top_hits,
+        "available_organisms": available_organisms,
+        "available_imaging_methods": available_methods,
     }
     return _normalize_search_payload("images", query, safe_limit, raw_payload)
+
+
+async def search_models(task: str, limit: int = 5) -> Dict[str, Any]:
+    """
+    Search the RI-SCALE AI Model Hub for models matching a given task.
+
+    Args:
+        task: Task description, e.g. 'cell segmentation', 'nuclei detection', 'cancer classification'
+        limit: Maximum number of results to return.
+
+    Returns:
+        Dictionary with 'results' (list of id, name, tags, description) and 'total' count.
+    """
+    url = "https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.get(url, params={"limit": 100})
+        r.raise_for_status()
+        data = r.json()
+        items = data.get("items", data) if isinstance(data, dict) else data
+
+    keywords = [w.lower() for w in task.split() if len(w) > 2]
+    matches = []
+    for item in items:
+        m = item.get("manifest", {})
+        tags = [t.lower() for t in m.get("tags", [])]
+        name = m.get("name", "").lower()
+        desc = m.get("description", "").lower()
+        if any(kw in tags or kw in name or kw in desc for kw in keywords):
+            matches.append({
+                "id": item.get("id", ""),
+                "name": m.get("name", ""),
+                "tags": m.get("tags", []),
+                "description": _short_text(m.get("description", ""), 120),
+            })
+
+    return {"results": matches[:limit], "total": len(matches)}
+
+
+async def run_cellpose_on_image(image_url: str) -> str:
+    """
+    Run Cellpose-SAM cell segmentation on an image from a URL and return
+    a segmentation overlay rendered as an inline Markdown image.
+
+    Args:
+        image_url: Direct URL to an image. Use the thumbnail_url field from
+            search_datasets() or search_images() results.
+
+    Returns:
+        Markdown string with cell count and an inline base64 segmentation overlay image.
+    """
+    import io
+    import base64
+    import numpy as np
+    from PIL import Image
+    from hypha_rpc import connect_to_server
+
+    # 1. Connect to Hypha, get chat proxy + Cellpose service
+    server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
+
+    # 5. Re-fetch image via chat proxy (server-side, bypasses browser CORS)
+    proxy = await server.get_service("ri-scale/default@chat-proxy")
+    fetch_result = await proxy.resolve_url(url=image_url)
+    if not fetch_result.get("ok") or not fetch_result.get("base64"):
+        raise RuntimeError(f"Could not fetch image via proxy: {fetch_result.get('error', 'unknown error')}")
+    img_bytes = base64.b64decode(fetch_result["base64"])
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    w, h = img.size
+    if max(w, h) > 320:
+        scale = 320 / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    # 6. Convert to (C, H, W) numpy array
+    img_chw = np.transpose(np.array(img), (2, 0, 1))
+
+    # 7. Run Cellpose inference
+    cellpose = await server.get_service("bioimage-io/cellpose-finetuning")
+    result = await cellpose.infer(
+        model="cpsam",
+        input_arrays=[img_chw],
+        json_safe=True,
+        niter=250,
+        flow_threshold=0.4,
+        cellprob_threshold=0.0,
+    )
+
+    # 8. Handle response — supports both mask_png_base64 and npy_base64 formats
+    payload = result[0]["output"]
+    if isinstance(payload, dict) and payload.get("encoding") == "mask_png_base64":
+        # New format: pre-rendered mask PNG + cell count
+        n_cells = int(payload.get("object_count", 0))
+        mask_png_b64 = payload["png_base64"]
+        # Decode mask PNG to numpy for overlay
+        mask = np.array(Image.open(io.BytesIO(base64.b64decode(mask_png_b64))).convert("L"))
+    elif isinstance(payload, dict) and payload.get("encoding") == "npy_base64":
+        mask_bytes = base64.b64decode(payload["data"])
+        mask = np.frombuffer(mask_bytes, dtype=np.dtype(payload["dtype"])).reshape(payload["shape"])
+        n_cells = int(mask.max())
+    else:
+        mask = np.array(payload)
+        n_cells = int(mask.max())
+
+    # 9. Colour overlay (vectorised)
+    np.random.seed(42)
+    mask_norm = (mask.astype(np.float32) / max(mask.max(), 1) * 254 + 1).astype(np.uint8) * (mask > 0)
+    n_labels = int(mask_norm.max()) + 1
+    colors = np.random.randint(80, 230, (max(n_labels, 2), 3), dtype=np.uint8)
+    colors[0] = [0, 0, 0]
+    colored = colors[mask_norm]
+    alpha = (mask_norm > 0).astype(np.float32)[..., np.newaxis] * 0.5
+    orig = np.array(img)
+    overlay_arr = np.clip(orig * (1 - alpha) + colored * alpha, 0, 255).astype(np.uint8)
+
+    # 10. Encode overlay as base64 PNG
+    buf = io.BytesIO()
+    Image.fromarray(overlay_arr).save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode()
+
+    return (
+        f"Segmentation complete. Detected **{n_cells} cells**.\n\n"
+        f"![Segmentation overlay](data:image/png;base64,{b64})"
+    )
 
 
 def explain_advanced_query_syntax() -> str:
@@ -726,7 +878,9 @@ You are the RI-SCALE BioImage Finder.
 
 You can call these utility functions directly:
 - search_datasets(query: str, limit: int = 10)
-- search_images(query: str, limit: int = 10)
+- search_images(query: str, limit: int = 10, scientific_name: str = None, imaging_method: str = None)
+- search_models(task: str, limit: int = 5)
+- run_cellpose_on_image(image_url: str)
 - explain_advanced_query_syntax()
 
 Use tools first whenever a user asks for archive results.
@@ -742,7 +896,26 @@ Use tools first whenever a user asks for archive results.
 - If any dataset query already returns at least the requested number of results, stop calling tools and answer immediately.
 - Tool outputs are compact structured JSON objects. You must decide the response format from user intent (listing, comparison, recommendation, synthesis).
 - Do not default to a fixed template like "Here are up to N ..." unless the user explicitly asks for a list.
-- When a dataset result has a non-null `thumbnail_url`, include it in your response as a Markdown image: `![Preview of <title>](<thumbnail_url>)`. Show at most 3 thumbnails per response to avoid clutter.
+- For image searches, extract organism and imaging modality from the user's query and pass them as filters:
+  - scientific_name: use lowercase scientific name, e.g. "drosophila melanogaster", "homo sapiens", "mus musculus"
+  - imaging_method: use lowercase modality, e.g. "confocal microscopy", "fluorescence microscopy", "bright-field microscopy"
+- If search_images returns available_organisms or available_imaging_methods in the result, use those values for follow-up filtered queries.
+- For queries like "show me images of X in Y" or "find fluorescence images of Z", always use search_images with appropriate filters rather than search_datasets.
+## Image previews
+- Preview images are ONLY available from `search_datasets()` results via the `thumbnail_url` field (a pre-rendered 512×512 PNG).
+- `search_images()` results contain metadata (file names, accession IDs, file patterns) but NO direct image URLs — individual `.tif` or `.ome.tif` files cannot be previewed directly in the browser.
+- NEVER try to construct or guess a URL for a raw image file (e.g. `.tif`, `.ome.tif`). These are too large to display and not browser-accessible.
+- When a user asks to see an image from a specific dataset: call `search_datasets()` with the dataset accession or title, and use the `thumbnail_url` from the result. If no `thumbnail_url` is present, tell the user that no browser-displayable preview is available for that dataset, and offer to search for similar datasets that do have previews.
+- When a dataset result has a non-null `thumbnail_url`, include it as: `![Preview of <title>](<thumbnail_url>)`. Show at most 3 thumbnails per response.
+
+## Image analysis
+- For analysis requests (e.g. "segment cells", "count nuclei", "analyse this dataset", "run Cellpose"):
+  1. If no dataset is selected yet, call search_datasets() or search_images() first.
+  2. Call search_models() with the task (e.g. "cell segmentation") to show available models from the AI Model Hub.
+  3. Use the thumbnail_url from the dataset result as image_url for run_cellpose_on_image().
+  4. Call run_cellpose_on_image(thumbnail_url) — it runs Cellpose-SAM and returns a segmentation overlay image with cell count.
+- Always confirm with the user which dataset to analyse before running inference.
+- Only pass thumbnail_url values from actual search_datasets() results to run_cellpose_on_image() — never invent URLs.
 Then provide a concise human summary with links/accessions whenever available.
 """
 )
