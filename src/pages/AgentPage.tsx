@@ -48,7 +48,7 @@ const O4_MINI_CHAT_MODEL = 'o4-mini';
 const O3_MINI_CHAT_MODEL = 'o3-mini';
 const O3_CHAT_MODEL = 'o3';
 const GPT4O_MINI_CHAT_MODEL = 'gpt-4o-mini';
-const DEFAULT_CHAT_MODEL = GPT41_CHAT_MODEL;
+const DEFAULT_CHAT_MODEL = GPT41_MINI_CHAT_MODEL;
 
 const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
   { value: GPT5_NANO_CHAT_MODEL, label: 'GPT-5 nano' },

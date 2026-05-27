@@ -1,6 +1,13 @@
 import micropip
+import importlib.util
 
-await micropip.install(["hypha-rpc", "pillow"])
+_to_install = []
+if not importlib.util.find_spec("hypha_rpc"):
+    _to_install.append("hypha-rpc")
+if not importlib.util.find_spec("PIL"):
+    _to_install.append("pillow")
+if _to_install:
+    await micropip.install(_to_install)
 
 import json
 import re
