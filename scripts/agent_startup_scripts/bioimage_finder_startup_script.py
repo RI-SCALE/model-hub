@@ -807,8 +807,8 @@ async def run_cellpose_on_image(image_url: str) -> str:
     # 6. Convert to (C, H, W) numpy array
     img_chw = np.transpose(np.array(img), (2, 0, 1))
 
-    # 7. Run Cellpose inference
-    cellpose = await server.get_service("bioimage-io/cellpose-finetuning")
+    # 7. Run Cellpose inference via TUBITAK BioEngine worker (ri-scale workspace)
+    cellpose = await server.get_service("ri-scale/cellpose-finetuning")
     result = await cellpose.infer(
         model="cpsam",
         input_arrays=[img_chw],
@@ -845,14 +845,14 @@ async def run_cellpose_on_image(image_url: str) -> str:
     orig = np.array(img)
     overlay_arr = np.clip(orig * (1 - alpha) + colored * alpha, 0, 255).astype(np.uint8)
 
-    # 10. Encode overlay as base64 PNG
+    # 10. Encode overlay as JPEG (quality 80) — keeps base64 under ~30KB vs ~200KB for PNG
     buf = io.BytesIO()
-    Image.fromarray(overlay_arr).save(buf, format="PNG")
+    Image.fromarray(overlay_arr).save(buf, format="JPEG", quality=80)
     b64 = base64.b64encode(buf.getvalue()).decode()
 
     return (
         f"Segmentation complete. Detected **{n_cells} cells**.\n\n"
-        f"![Segmentation overlay](data:image/png;base64,{b64})"
+        f"![Segmentation overlay](data:image/jpeg;base64,{b64})"
     )
 
 
