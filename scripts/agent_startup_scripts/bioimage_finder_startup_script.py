@@ -6,6 +6,8 @@ if not importlib.util.find_spec("hypha_rpc"):
     _to_install.append("hypha-rpc")
 if not importlib.util.find_spec("PIL"):
     _to_install.append("pillow")
+if not importlib.util.find_spec("numcodecs"):
+    _to_install.append("numcodecs")
 if _to_install:
     await micropip.install(_to_install)
 
@@ -256,6 +258,7 @@ def _dataset_result_from_hit(item: Dict[str, Any]) -> Dict[str, Any]:
         else None
     )
 
+    # example_image_uri is no longer populated by BIA; fall back to zarr URL
     thumbnail_url = None
     for ds in source_payload.get("dataset", []):
         if not isinstance(ds, dict):
@@ -263,6 +266,17 @@ def _dataset_result_from_hit(item: Dict[str, Any]) -> Dict[str, Any]:
         uris = ds.get("example_image_uri", [])
         if isinstance(uris, list) and uris and isinstance(uris[0], str):
             thumbnail_url = uris[0]
+            break
+        # BIA now serves OME-Zarr — find the zarr file_uri from representations
+        for rep in ds.get("representation", []):
+            if not isinstance(rep, dict):
+                continue
+            if "zarr" in rep.get("image_format", ""):
+                file_uris = rep.get("file_uri", [])
+                if isinstance(file_uris, list) and file_uris:
+                    thumbnail_url = file_uris[0]
+                    break
+        if thumbnail_url:
             break
 
     return {
@@ -789,71 +803,133 @@ async def run_cellpose_on_image(image_url: str) -> str:
     from PIL import Image
     from hypha_rpc import connect_to_server
 
-    # 1. Connect to Hypha, get chat proxy + Cellpose service
+    # 1. Connect to Hypha and get chat proxy (all external requests go through it — CORS)
     server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
-
-    # 5. Re-fetch image via chat proxy (server-side, bypasses browser CORS)
     proxy = await server.get_service("ri-scale/default@chat-proxy")
-    fetch_result = await proxy.resolve_url(url=image_url)
-    if not fetch_result.get("ok") or not fetch_result.get("base64"):
-        raise RuntimeError(f"Could not fetch image via proxy: {fetch_result.get('error', 'unknown error')}")
-    img_bytes = base64.b64decode(fetch_result["base64"])
-    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+    async def _proxy_get_json(url):
+        import json as _json
+        r = await proxy.resolve_url(url=url)
+        if not r.get("ok"):
+            raise RuntimeError(f"Proxy fetch failed for {url}: {r.get('error')}")
+        if r.get("json"):
+            return r["json"]
+        if r.get("text"):
+            return _json.loads(r["text"])
+        if r.get("base64"):
+            return _json.loads(base64.b64decode(r["base64"]).decode())
+        raise RuntimeError(f"Empty proxy response for {url}")
+
+    async def _proxy_get_bytes(url):
+        r = await proxy.resolve_url(url=url)
+        if not r.get("ok"):
+            raise RuntimeError(f"Proxy fetch failed for {url}: {r.get('error')}")
+        return base64.b64decode(r["base64"])
+
+    # 2. Fetch image — OME-Zarr or direct image URL (all via proxy to bypass CORS)
+    if ".zarr" in image_url or ".ome.zarr" in image_url:
+        _base = image_url.rstrip("/")
+        _attrs = await _proxy_get_json(f"{_base}/.zattrs")
+        _datasets = _attrs["multiscales"][0]["datasets"]
+        _low = _datasets[-1]["path"]
+        _zmeta = await _proxy_get_json(f"{_base}/{_low}/.zarray")
+        _shape = _zmeta["shape"]   # (T, C, Z, Y, X)
+        _dtype = np.dtype(_zmeta["dtype"])
+        _h, _w = _shape[-2], _shape[-1]
+        _compressor = _zmeta.get("compressor")
+        _sep = _zmeta.get("dimension_separator", "/")
+
+        async def _fetch_chunk(c_idx):
+            # Build chunk indices: T=0, C=c_idx, Z=0, Y=0, X=0
+            idx = _sep.join(["0", str(c_idx), "0", "0", "0"])
+            _url = f"{_base}/{_low}/{idx}"
+            _raw = await _proxy_get_bytes(_url)
+            # Decompress
+            if _compressor:
+                import numcodecs
+                _codec = numcodecs.get_codec(_compressor)
+                _raw = _codec.decode(_raw)
+            elif len(_raw) != _h * _w * _dtype.itemsize:
+                import zlib as _zlib
+                try: _raw = _zlib.decompress(_raw)
+                except Exception: pass
+            return np.frombuffer(bytes(_raw), dtype=_dtype).reshape(_h, _w)
+
+        _channels = [await _fetch_chunk(_c) for _c in range(min(_shape[1], 3))]
+        _hwc = np.stack(_channels * (3 // len(_channels) + 1), axis=-1)[:, :, :3]
+        if _dtype != np.uint8:
+            _mn, _mx = float(_hwc.min()), float(_hwc.max())
+            _hwc = ((_hwc - _mn) / max(_mx - _mn, 1) * 255).astype(np.uint8)
+        img = Image.fromarray(_hwc.astype(np.uint8))
+    else:
+        fetch_result = await proxy.resolve_url(url=image_url)
+        if not fetch_result.get("ok") or not fetch_result.get("base64"):
+            raise RuntimeError(f"Could not fetch image via proxy: {fetch_result.get('error', 'unknown error')}")
+        img = Image.open(io.BytesIO(base64.b64decode(fetch_result["base64"]))).convert("RGB")
+
+    # Cap at 256px — keeps each JPEG under 12KB so two images fit in the stdout buffer
     w, h = img.size
-    if max(w, h) > 320:
-        scale = 320 / max(w, h)
+    if max(w, h) > 256:
+        scale = 256 / max(w, h)
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    # 6. Convert to (C, H, W) numpy array
-    img_chw = np.transpose(np.array(img), (2, 0, 1))
+    # 6. Convert to (C, H, W) numpy array and check image quality
+    arr = np.array(img)
+    gray = arr.mean(axis=2)
+    contrast = float(gray.std())
+    bright_frac = float((gray > 80).mean())
 
-    # 7. Run Cellpose inference via TUBITAK BioEngine worker (ri-scale workspace)
+    # Warn early if the thumbnail is unlikely to contain segmentable cells:
+    # - very low contrast (flat/uniform image, no distinguishable structures)
+    # - almost entirely bright or entirely dark (overexposed / blank)
+    if contrast < 15:
+        return (
+            f"⚠️ The preview image has very low contrast (std={contrast:.1f}), which suggests it "
+            f"may be a flat or uniform frame not suitable for cell segmentation. "
+            f"Try a different dataset whose thumbnail shows individual cells or nuclei."
+        )
+    if bright_frac > 0.95 or bright_frac < 0.01:
+        return (
+            f"⚠️ The preview image appears {'nearly fully saturated' if bright_frac > 0.95 else 'almost completely dark'} "
+            f"(bright pixel fraction={bright_frac:.2f}), which makes cell detection unreliable. "
+            f"Try a dataset whose thumbnail clearly shows individual cells."
+        )
+
+    img_chw = np.transpose(arr, (2, 0, 1))
+
+    # 7. Run Cellpose inference via TUBITAK BioEngine worker.
+    #    output_format="url" makes the service render the overlay with a random
+    #    colormap, write full-precision labels (16-bit PNG + npy) to a fresh
+    #    Hypha artifact, and return markdown-ready URLs — no base64 round-trip.
     cellpose = await server.get_service("ri-scale/cellpose-finetuning")
     result = await cellpose.infer(
         model="cpsam",
         input_arrays=[img_chw],
-        json_safe=True,
+        output_format="url",
         niter=250,
         flow_threshold=0.4,
         cellprob_threshold=0.0,
     )
-
-    # 8. Handle response — supports both mask_png_base64 and npy_base64 formats
     payload = result[0]["output"]
-    if isinstance(payload, dict) and payload.get("encoding") == "mask_png_base64":
-        # New format: pre-rendered mask PNG + cell count
-        n_cells = int(payload.get("object_count", 0))
-        mask_png_b64 = payload["png_base64"]
-        # Decode mask PNG to numpy for overlay
-        mask = np.array(Image.open(io.BytesIO(base64.b64decode(mask_png_b64))).convert("L"))
-    elif isinstance(payload, dict) and payload.get("encoding") == "npy_base64":
-        mask_bytes = base64.b64decode(payload["data"])
-        mask = np.frombuffer(mask_bytes, dtype=np.dtype(payload["dtype"])).reshape(payload["shape"])
-        n_cells = int(mask.max())
-    else:
-        mask = np.array(payload)
-        n_cells = int(mask.max())
 
-    # 9. Colour overlay (vectorised)
-    np.random.seed(42)
-    mask_norm = (mask.astype(np.float32) / max(mask.max(), 1) * 254 + 1).astype(np.uint8) * (mask > 0)
-    n_labels = int(mask_norm.max()) + 1
-    colors = np.random.randint(80, 230, (max(n_labels, 2), 3), dtype=np.uint8)
-    colors[0] = [0, 0, 0]
-    colored = colors[mask_norm]
-    alpha = (mask_norm > 0).astype(np.float32)[..., np.newaxis] * 0.5
-    orig = np.array(img)
-    overlay_arr = np.clip(orig * (1 - alpha) + colored * alpha, 0, 255).astype(np.uint8)
+    if not isinstance(payload, dict) or payload.get("encoding") != "hypha_artifact":
+        return (
+            "⚠️ Unexpected segmentation response format. "
+            "The Cellpose service may need to be redeployed with output_format='url' support."
+        )
 
-    # 10. Encode overlay as JPEG (quality 80) — keeps base64 under ~30KB vs ~200KB for PNG
-    buf = io.BytesIO()
-    Image.fromarray(overlay_arr).save(buf, format="JPEG", quality=80)
-    b64 = base64.b64encode(buf.getvalue()).decode()
+    n_cells = int(payload.get("object_count", 0))
+    if n_cells == 0:
+        return (
+            f"⚠️ Cellpose-SAM found **0 cells** in this preview image "
+            f"(contrast={contrast:.1f}, bright_frac={bright_frac:.2f}). "
+            f"The thumbnail may show a tissue overview, subcellular structures, or an imaging "
+            f"artefact rather than individual cells. Try a different dataset whose thumbnail "
+            f"clearly shows individual cells or nuclei (e.g. 'HeLa nuclei', 'Drosophila cells', "
+            f"'nuclear staining')."
+        )
 
-    return (
-        f"Segmentation complete. Detected **{n_cells} cells**.\n\n"
-        f"![Segmentation overlay](data:image/jpeg;base64,{b64})"
-    )
+    return str(payload.get("markdown", ""))
 
 
 def explain_advanced_query_syntax() -> str:
@@ -909,18 +985,20 @@ Use tools first whenever a user asks for archive results.
 - If search_images returns available_organisms or available_imaging_methods in the result, use those values for follow-up filtered queries.
 - For queries like "show me images of X in Y" or "find fluorescence images of Z", always use search_images with appropriate filters rather than search_datasets.
 ## Image previews
-- Preview images are ONLY available from `search_datasets()` results via the `thumbnail_url` field (a pre-rendered 512×512 PNG).
-- `search_images()` results contain metadata (file names, accession IDs, file patterns) but NO direct image URLs — individual `.tif` or `.ome.tif` files cannot be previewed directly in the browser.
-- NEVER try to construct or guess a URL for a raw image file (e.g. `.tif`, `.ome.tif`). These are too large to display and not browser-accessible.
-- When a user asks to see an image from a specific dataset: call `search_datasets()` with the dataset accession or title, and use the `thumbnail_url` from the result. If no `thumbnail_url` is present, tell the user that no browser-displayable preview is available for that dataset, and offer to search for similar datasets that do have previews.
-- When a dataset result has a non-null `thumbnail_url`, include it as: `![Preview of <title>](<thumbnail_url>)`. Show at most 3 thumbnails per response.
+- The `thumbnail_url` field in `search_datasets()` results may be a pre-rendered PNG **or** an OME-Zarr URL (`.ome.zarr`). Both work with `run_cellpose_on_image()`.
+- PNG thumbnail_urls can be shown inline: `![Preview of <title>](<thumbnail_url>)`. Show at most 3 thumbnails per response.
+- OME-Zarr thumbnail_urls cannot be displayed inline — do NOT embed them as markdown images. Instead, tell the user the dataset has image data available for segmentation.
+- `search_images()` results contain metadata but NO directly displayable URLs.
+- NEVER construct or guess raw image file URLs (`.tif`, `.ome.tif`).
+- When a dataset result has no `thumbnail_url`, tell the user no preview is available and offer to search for similar datasets.
 
 ## Image analysis
 - For analysis requests (e.g. "segment cells", "count nuclei", "analyse this dataset", "run Cellpose"):
   1. If no dataset is selected yet, call search_datasets() or search_images() first.
   2. Call search_models() with the task (e.g. "cell segmentation") to show available models from the AI Model Hub.
   3. Use the thumbnail_url from the dataset result as image_url for run_cellpose_on_image().
-  4. Call run_cellpose_on_image(thumbnail_url) — it runs Cellpose-SAM and returns a segmentation overlay image with cell count.
+  4. Call run_cellpose_on_image(thumbnail_url) — it runs Cellpose-SAM and returns either a segmentation overlay image with cell count, or a ⚠️ warning message if the thumbnail is unsuitable (low contrast, overexposed, or 0 cells detected).
+- If run_cellpose_on_image() returns a ⚠️ warning, relay it clearly to the user and suggest searching for a different dataset whose thumbnail shows individual cells or nuclei (e.g. "HeLa nuclei", "Drosophila cells", "nuclear staining", "cell segmentation benchmark").
 - Always confirm with the user which dataset to analyse before running inference.
 - Only pass thumbnail_url values from actual search_datasets() results to run_cellpose_on_image() — never invent URLs.
 Then provide a concise human summary with links/accessions whenever available.
