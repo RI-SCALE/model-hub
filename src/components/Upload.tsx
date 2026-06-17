@@ -230,7 +230,7 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded,
     : `git clone ${publicGitUrl} ${cloneDir}\ncd ${cloneDir}`;
 
   return (
-    <div className="border border-gray-200 rounded-xl overflow-hidden hover:border-[#f39200] transition-colors">
+    <div data-artifact-id={artifact.id} className="border border-gray-200 rounded-xl overflow-hidden hover:border-[#f39200] transition-colors">
       <button
         onClick={onToggle}
         className="w-full text-left p-5 flex items-center justify-between gap-4 hover:bg-gray-50 transition-colors"
@@ -443,7 +443,19 @@ const Upload: React.FC<UploadProps> = () => {
 
       setShowCreateDialog(false);
       await fetchMyArtifacts();
-      setExpandedId(artifact.id || artifact.alias);
+      const newId = artifact.id || artifact.alias;
+      setExpandedId(newId);
+
+      // Scroll the new card into view once React commits the expanded state.
+      // Two rAFs ensure we run after the next paint, when the new card is in the DOM.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const el = document.querySelector(`[data-artifact-id="${CSS.escape(newId)}"]`);
+          if (el) {
+            (el as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        });
+      });
     } catch (err: any) {
       alert('Failed to create artifact: ' + (err.message || err));
     } finally {
