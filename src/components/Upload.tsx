@@ -226,7 +226,7 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded,
   const cloneDir = alias;
 
   const cloneCommands = gitAuthUrl
-    ? `git clone ${gitAuthUrl} ${cloneDir}\ncd ${cloneDir}\ngit lfs install\n# Track large model files with LFS:\ngit lfs track "*.pt" "*.ckpt" "*.h5" "*.pkl" "*.pth" "*.safetensors" "*.bin"\ngit add .gitattributes\n# Add README and rdf.yaml:\necho "# ${displayName}" > README.md\ngit add README.md\ngit add .\ngit commit -m "Initial commit"\ngit push origin main`
+    ? `git clone ${gitAuthUrl} ${cloneDir}\ncd ${cloneDir}\ngit lfs install\n# Track large model files with LFS:\ngit lfs track "*.pt" "*.ckpt" "*.h5" "*.pkl" "*.pth" "*.safetensors" "*.bin"\ngit add .gitattributes\n# Add README and rdf.yaml:\necho "# ${displayName}" > README.md\ngit add README.md\ngit add .\ngit commit -m "Initial commit"\n# Make sure the local branch is named "main" (some systems default to "master"):\ngit branch -M main\ngit push -u origin main`
     : `git clone ${publicGitUrl} ${cloneDir}\ncd ${cloneDir}`;
 
   return (
@@ -541,7 +541,9 @@ git add .gitattributes
 # Add your model files, README.md, rdf.yaml, etc.
 git add .
 git commit -m "Initial model upload"
-git push origin main`}
+# Make sure the local branch is named "main" (some systems default to "master"):
+git branch -M main
+git push -u origin main`}
             />
           </div>
         </div>
