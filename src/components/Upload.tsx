@@ -206,17 +206,7 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded,
     if (!server || !artifact.git_url) return;
     setGeneratingToken(true);
     try {
-      // The artifact lives in the `ri-scale` workspace, but the user's default
-      // Hypha session is bound to their personal workspace. Mint the push token
-      // explicitly for the artifact's workspace so git auth succeeds against
-      // /<workspace>/git/<alias>.
-      const artifactWorkspace = (artifact as any).workspace
-        || artifact.id?.split('/')?.[0]
-        || 'ri-scale';
-      const token = await server.generateToken({
-        workspace: artifactWorkspace,
-        expires_in: expiresIn,
-      });
+      const token = await server.generateToken({ expires_in: expiresIn });
       const gitUrl = new URL(artifact.git_url);
       gitUrl.username = 'git';
       gitUrl.password = token;
@@ -231,9 +221,7 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded,
 
   const alias = artifact.alias || artifact.id.split('/').pop() || '';
   const displayName = artifact.manifest.name || alias;
-  // Canonical Hypha git path is /<workspace>/git/<alias>, not /<workspace>/artifacts/<alias>/git.
-  // The server-returned artifact.git_url uses the correct path; this fallback matches.
-  const publicGitUrl = artifact.git_url || `${SERVER_URL}/ri-scale/git/${alias}`;
+  const publicGitUrl = artifact.git_url || `${SERVER_URL}/ri-scale/artifacts/${alias}/git`;
   // Use alias as directory name (it matches what git clone will create)
   const cloneDir = alias;
 
