@@ -206,26 +206,11 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded,
     if (!server || !artifact.git_url) return;
     setGeneratingToken(true);
     try {
-      // The artifact lives in a workspace (e.g. `ri-scale`) but the user's default
-      // Hypha session is bound to their personal workspace. Mint the push token
-      // explicitly for the artifact's workspace so git auth succeeds against
-      // /<workspace>/git/<alias>.
-      //
-      // - `permission: 'read_write'` clamps below admin so the token can't mint
-      //   further tokens or mutate the workspace.
-      // - `extra_scopes: ['artifact:<id>#rw']` is currently advisory (the Hypha
-      //   git endpoint doesn't yet enforce per-artifact scopes — tracked
-      //   server-side). Once enforced, the same generated token will
-      //   automatically narrow to this artifact only. No client change needed.
-      const artifactWorkspace = (artifact as any).workspace
-        || artifact.id?.split('/')?.[0]
-        || 'ri-scale';
-      const token = await server.generateToken({
-        workspace: artifactWorkspace,
-        permission: 'read_write',
-        extra_scopes: [`artifact:${artifact.id}#rw`],
-        expires_in: expiresIn,
-      });
+      // A simple personal-workspace token is enough: the Hypha git endpoint
+      // (>= 0.21.92, 2026-06-18) resolves the token's `parent` claim to the
+      // human user id and checks per-artifact _permissions, so any
+      // authenticated user with rights on the artifact can push.
+      const token = await server.generateToken({ expires_in: expiresIn });
       const gitUrl = new URL(artifact.git_url);
       gitUrl.username = 'git';
       gitUrl.password = token;
@@ -353,7 +338,7 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded,
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                   </svg>
                   <span className="text-xs text-yellow-700">
-                    This URL contains a personal token scoped to the <code className="font-mono">{(artifact as any).workspace || 'ri-scale'}</code> workspace (read-write, valid {tokenExpiry}). Keep it private and don't share it.
+                    This URL contains your personal token (valid {tokenExpiry}). Keep it private and don't share it.
                   </span>
                   <button
                     onClick={() => setGitAuthUrl(null)}
