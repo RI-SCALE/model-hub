@@ -29,7 +29,10 @@ interface FileInfo {
   type: string;
   name: string;
   size: number;
-  last_modified: number;
+  // Hypha's /artifacts/<alias>/files/ endpoint omits last_modified for git-storage
+  // artifacts (and any S3-backed entries that don't carry an mtime). Treat it as
+  // optional and skip the timestamp segment in the row when absent.
+  last_modified?: number;
 }
 
 interface ArtifactFilesProps {
@@ -105,8 +108,11 @@ const ArtifactFiles: React.FC<ArtifactFilesProps> = ({
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
   };
 
-  const formatTimestamp = (timestamp: number): string => {
-    return new Date(timestamp * 1000).toLocaleDateString('en-US', {
+  const formatTimestamp = (timestamp?: number): string => {
+    if (!timestamp || !Number.isFinite(timestamp)) return '';
+    const d = new Date(timestamp * 1000);
+    if (isNaN(d.getTime())) return '';
+    return d.toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
@@ -372,7 +378,7 @@ const ArtifactFiles: React.FC<ArtifactFilesProps> = ({
                           display: 'block'
                         }}
                       >
-                        {formatFileSize(file.size)} • {formatTimestamp(file.last_modified)}
+                        {formatFileSize(file.size)}{formatTimestamp(file.last_modified) ? ` • ${formatTimestamp(file.last_modified)}` : ''}
                       </Typography>
                     </Box>
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
