@@ -32,28 +32,35 @@ const ApiDocs: React.FC = () => {
   const getListModelsCode = (lang: string) => {
     switch (lang) {
       case 'python':
-        return `import requests
+        return `import requests, json
 
-# List first 10 models
+# List first 10 PUBLISHED models (drafts are hidden from the public catalogue).
+# Filter value MUST be the string "true" — JSON boolean is silently ignored.
 response = requests.get(
     "https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children",
-    params={"limit": 10}
+    params={
+        "limit": 10,
+        "pagination": "true",
+        "filters": json.dumps({"manifest": {"published": "true"}}),
+    },
 )
-models = response.json()
+models = response.json().get("items", [])
 
 for model in models:
     print(f"{model['alias']}: {model['manifest']['name']}")`;
       case 'javascript':
-        return `// List first 10 models
-fetch("https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10")
+        return `// Only published models are returned; filter value is the literal string "true"
+const filter = encodeURIComponent(JSON.stringify({ manifest: { published: "true" } }));
+fetch(\`https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10&pagination=true&filters=\${filter}\`)
   .then(res => res.json())
-  .then(models => {
+  .then(({ items: models }) => {
     models.forEach(model => {
       console.log(\`\${model.alias}: \${model.manifest.name}\`);
     });
   });`;
       case 'curl':
-        return `curl "https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10"`;
+        return `# Filter is {"manifest":{"published":"true"}} — URL-encoded inline below
+curl 'https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?limit=10&pagination=true&filters=%7B%22manifest%22%3A%7B%22published%22%3A%22true%22%7D%7D'`;
       default:
         return '';
     }
