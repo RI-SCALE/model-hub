@@ -8,14 +8,24 @@ import { Grid } from '@mui/material';
 interface ResourceGridProps {}
 
 const PHRASES = [
-  "cell segmentation",
   "climate downscaling",
-  "space debris detection",
-  "medical imaging AI",
-  "anomaly detection",
+  "earth observation",
+  "cell segmentation",
   "SAR interferometry",
+  "medical imaging",
+  "space debris detection",
+  "anomaly detection",
   "histopathology grading",
   "synthetic data generation",
+];
+
+const DOMAINS: { label: string; query: string }[] = [
+  { label: "Life sciences",      query: "cell" },
+  { label: "Climate science",    query: "climate" },
+  { label: "Earth observation",  query: "radar" },
+  { label: "Medical imaging",    query: "medical" },
+  { label: "Materials & physics", query: "materials" },
+  { label: "All domains",        query: "" },
 ];
 
 interface PaginationProps {
@@ -263,28 +273,116 @@ const ArtifactGrid: React.FC<ResourceGridProps> = () => {
   return (
     <div className="w-full">
       <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8">
-        
-        {/* Simple divider instead of gradient */}
-        <div className="w-full h-px bg-gray-100 mb-8 sm:mb-12"></div>
-         
+
         {/* Show loading overlay when loading (but not when just typing) */}
         {loading && !isTyping && <LoadingOverlay />}
-        
-        <div className="relative mb-8 sm:mb-12">
-          {/* Welcome Blurb */}
-          <div className="mb-10 text-center max-w-4xl mx-auto">
-            <h1 className="text-3xl sm:text-4xl font-bold text-ri-black mb-4">
-              Discover <span className="text-ri-orange inline-block min-w-[200px]">{text}</span> models
-            </h1>
-            <p className="text-lg text-gray-600 max-w-2xl mx-auto">
-              Open AI models for biomedical imaging, climate science, space observation, and more —
-              from the <Link to="/about" className="text-black hover:text-ri-black font-semibold transition-colors">RI-SCALE</Link> European research infrastructure network.
-            </p>
-          </div>
 
+        {/* ─── EU-platform hero ─── */}
+        <section className="pt-10 sm:pt-16 pb-12 sm:pb-16 border-b border-gray-100">
+          <div className="max-w-5xl mx-auto">
+
+            {/* Eyebrow tag */}
+            <div className="flex items-center gap-2 mb-5">
+              <span className="inline-block w-2 h-2 rounded-full bg-ri-orange"></span>
+              <span className="text-xs font-semibold tracking-[0.18em] uppercase text-gray-500">
+                EU Research Infrastructure  ·  Horizon Europe
+              </span>
+            </div>
+
+            {/* Headline */}
+            <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-ri-black leading-[1.05] tracking-tight mb-5">
+              The RI-SCALE AI Model Hub
+            </h1>
+
+            {/* Subtitle */}
+            <p className="text-lg sm:text-xl text-gray-600 max-w-3xl leading-relaxed mb-8">
+              An open catalogue of research AI models across the European
+              research infrastructure network — find, cite, and run models for{' '}
+              <span className="text-ri-orange font-semibold">{text}</span>
+              <span className="text-ri-orange">|</span>
+              {' '}and beyond.
+            </p>
+
+            {/* Stats row */}
+            <div className="flex flex-wrap gap-x-10 gap-y-4 mb-9 text-sm">
+              <div>
+                <div className="text-2xl font-bold text-ri-black tabular-nums">{totalItems || '—'}</div>
+                <div className="text-xs uppercase tracking-wider text-gray-500 mt-0.5">Registered models</div>
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-ri-black tabular-nums">5+</div>
+                <div className="text-xs uppercase tracking-wider text-gray-500 mt-0.5">Scientific domains</div>
+              </div>
+              <div>
+                <div className="text-2xl font-bold text-ri-black tabular-nums">29</div>
+                <div className="text-xs uppercase tracking-wider text-gray-500 mt-0.5">Partner institutions</div>
+              </div>
+            </div>
+
+            {/* CTA buttons */}
+            <div className="flex flex-wrap gap-3 mb-10">
+              <Link
+                to="/upload"
+                className="px-5 py-2.5 bg-ri-black text-white text-sm font-medium rounded-full hover:bg-gray-800 transition-colors"
+              >
+                Contribute a model
+              </Link>
+              <Link
+                to="/agents"
+                className="px-5 py-2.5 border border-gray-300 text-gray-700 text-sm font-medium rounded-full hover:border-ri-orange hover:text-ri-orange transition-colors"
+              >
+                Try the agent demo
+              </Link>
+              <Link
+                to="/about"
+                className="px-5 py-2.5 text-gray-600 text-sm font-medium hover:text-ri-orange transition-colors"
+              >
+                About RI-SCALE  →
+              </Link>
+            </div>
+          </div>
+        </section>
+
+        {/* ─── Domain quick-filter pills ─── */}
+        <section className="py-7 border-b border-gray-100">
+          <div className="flex items-baseline justify-between mb-4">
+            <span className="text-xs font-semibold tracking-[0.16em] uppercase text-gray-500">
+              Browse by domain
+            </span>
+            <span className="text-xs text-gray-400 hidden sm:block">
+              Filters the search below
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {DOMAINS.map((d) => {
+              const isActive = searchQuery === d.query;
+              return (
+                <button
+                  key={d.label}
+                  onClick={() => {
+                    handleSearchChange(d.query);
+                    setIsTyping(false);
+                    setServerSearchQuery(d.query);
+                    setCurrentPage(1);
+                  }}
+                  className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors ${
+                    isActive
+                      ? 'bg-ri-black text-white border-ri-black'
+                      : 'bg-white text-gray-700 border-gray-200 hover:border-ri-orange hover:text-ri-orange'
+                  }`}
+                >
+                  {d.label}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ─── Search bar ─── */}
+        <div className="relative pt-8 mb-8 sm:mb-12">
           <div className="flex flex-col sm:flex-row gap-6 items-start">
              <div className="flex-1 w-full">
-                <SearchBar 
+                <SearchBar
                   value={searchQuery}
                   onSearchChange={handleSearchChange}
                   onSearchConfirm={handleSearchConfirm}

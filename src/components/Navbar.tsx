@@ -3,7 +3,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import LoginButton from './LoginButton';
 import { BiCube } from 'react-icons/bi';
 import { BsDatabase, BsCollection, BsPeople } from 'react-icons/bs';
-import { HiOutlineBeaker } from 'react-icons/hi';
+import { HiOutlineChatBubbleLeftRight } from 'react-icons/hi2';
 import { IoDocumentTextOutline, IoCloudUploadOutline } from 'react-icons/io5';
 import { AiOutlineInfoCircle } from 'react-icons/ai';
 import { RiLoginBoxLine } from 'react-icons/ri';
@@ -58,7 +58,7 @@ const Navbar: React.FC = () => {
               Models
             </Link>
             <Link to="/agents" className={navLinkClasses("/agents")}>
-              <HiOutlineBeaker className="mr-2" size={18} />
+              <HiOutlineChatBubbleLeftRight className="mr-2" size={18} />
               Agents
             </Link>
             <Link to="/partners" className={navLinkClasses("/partners")}>
@@ -138,7 +138,7 @@ const Navbar: React.FC = () => {
               className={mobileNavLinkClasses("/agents")}
               onClick={() => setIsMobileMenuOpen(false)}
             >
-              <HiOutlineBeaker className="mr-3" size={18} />
+              <HiOutlineChatBubbleLeftRight className="mr-3" size={18} />
               Agents
             </Link>
             <Link 

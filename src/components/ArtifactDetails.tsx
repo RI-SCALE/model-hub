@@ -692,6 +692,140 @@ const ArtifactDetails = () => {
             </CardContent>
           </Card>
 
+          {/* Clone via Git Card — only for git-storage artifacts */}
+          {(selectedResource as any).git_url && (
+            <Card
+              sx={{
+                backgroundColor: '#ffffff',
+                border: '1px solid #e5e7eb',
+                borderRadius: '8px',
+                boxShadow: 'none',
+              }}
+            >
+              <CardContent sx={{ p: { xs: 1, sm: 1.5, md: 2 } }}>
+                <Typography variant="h6" gutterBottom sx={{ fontWeight: 600, color: '#111827', fontSize: '1rem' }}>
+                  <CodeIcon sx={{ mr: 1, verticalAlign: 'text-bottom', fontSize: '1.1rem', color: '#f39200' }} />
+                  Clone via Git
+                </Typography>
+                <Typography variant="body2" sx={{ color: '#6b7280', mb: 1.5, fontSize: '0.875rem' }}>
+                  Read-only clone of this model's repository — no authentication needed.
+                </Typography>
+
+                {/* URL with copy button */}
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    p: 1,
+                    backgroundColor: '#f9fafb',
+                    border: '1px solid #e5e7eb',
+                    borderRadius: '6px',
+                    mb: 1.5,
+                  }}
+                >
+                  <Typography
+                    sx={{
+                      flex: 1,
+                      fontFamily: 'monospace',
+                      fontSize: '0.8125rem',
+                      color: '#374151',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {(selectedResource as any).git_url}
+                  </Typography>
+                  <IconButton
+                    size="small"
+                    onClick={() => {
+                      navigator.clipboard.writeText((selectedResource as any).git_url);
+                      setShowCopied(true);
+                      setTimeout(() => setShowCopied(false), 1500);
+                    }}
+                    title="Copy URL"
+                    sx={{ color: '#6b7280' }}
+                  >
+                    <ContentCopyIcon sx={{ fontSize: '1rem' }} />
+                  </IconButton>
+                </Box>
+
+                {/* Ready-to-run command block */}
+                <Typography variant="caption" sx={{ color: '#6b7280', display: 'block', mb: 0.5, fontWeight: 600 }}>
+                  Clone the files:
+                </Typography>
+                <Box
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: 1,
+                    p: 1.25,
+                    backgroundColor: '#1f2937',
+                    borderRadius: '6px',
+                    mb: 1.5,
+                  }}
+                >
+                  <Typography
+                    component="pre"
+                    sx={{
+                      flex: 1,
+                      fontFamily: 'monospace',
+                      fontSize: '0.8125rem',
+                      color: '#e5e7eb',
+                      m: 0,
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-all',
+                    }}
+                  >
+{`git clone ${(selectedResource as any).git_url}
+cd ${(selectedResource.alias || selectedResource.id.split('/').pop()) ?? 'model'}
+git lfs install   # if the model uses Git LFS for large weights
+git lfs pull`}
+                  </Typography>
+                  <IconButton
+                    size="small"
+                    onClick={() => {
+                      const dir = (selectedResource.alias || selectedResource.id.split('/').pop()) ?? 'model';
+                      navigator.clipboard.writeText(
+                        `git clone ${(selectedResource as any).git_url}\ncd ${dir}\ngit lfs install\ngit lfs pull`
+                      );
+                      setShowCopied(true);
+                      setTimeout(() => setShowCopied(false), 1500);
+                    }}
+                    title="Copy command"
+                    sx={{ color: '#9ca3af', '&:hover': { color: '#f39200' } }}
+                  >
+                    <ContentCopyIcon sx={{ fontSize: '1rem' }} />
+                  </IconButton>
+                </Box>
+
+                <Typography variant="caption" sx={{ color: '#9ca3af', fontSize: '0.75rem', display: 'block' }}>
+                  To upload a new version or contribute changes, open this model in the{' '}
+                  <Link component={RouterLink} to="/upload" sx={{ color: '#f39200', fontWeight: 500 }}>
+                    Upload page
+                  </Link>
+                  {' '}for the authenticated push URL.
+                </Typography>
+
+                {showCopied && (
+                  <Typography
+                    variant="caption"
+                    sx={{
+                      color: '#16a34a',
+                      fontSize: '0.75rem',
+                      mt: 0.5,
+                      display: 'block',
+                      fontWeight: 500,
+                    }}
+                  >
+                    Copied to clipboard
+                  </Typography>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {/* Files Card - Always show for all artifact types */}
           <ArtifactFiles artifactId={selectedResource.id} artifactInfo={selectedResource} version={version} />
 
