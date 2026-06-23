@@ -157,10 +157,18 @@ export HYPHA_TOKEN='<paste here>'
 
 The artifact-manager service is registered in the `public` workspace, so the
 REST URL is `https://hypha.aicell.io/public/services/artifact-manager/<method>`.
-The `parent_id` MUST be the **fully qualified** id of the collection
-(`ri-scale/ai-model-hub`), not just the alias — because the token's home
-workspace is your own personal one, and the artifact lives in the cross-
-workspace `ri-scale` namespace.
+
+**Two mandatory fields** that are easy to miss:
+
+- **`parent_id` MUST be the fully qualified id** of the collection
+  (`ri-scale/ai-model-hub`), not just the alias — because the token's home
+  workspace is your own personal one, and the artifact lives in the cross-
+  workspace `ri-scale` namespace.
+- **`config.storage: "git"` MUST be set at create time.** Without it the
+  artifact has no git endpoint and any later `git clone` returns 404. You
+  *cannot* add this flag via `edit()` later — Hypha strips most config
+  fields on read/edit. If you forget the flag, the only fix is `delete` +
+  recreate.
 
 ```bash
 # alias must be lowercase, hyphens only, 1–48 chars
@@ -235,8 +243,26 @@ asyncio.run(create())
 
 ### 4c. Git push (with LFS for large weights)
 
+**Auth scheme for the git endpoint** is HTTP Basic, with:
+
+- **Username:** the literal string `git` — NOT your email, NOT `x`, NOT the token itself.
+- **Password:** your Hypha API token from §4a.
+
+Two equivalent ways to pass these:
+
 ```bash
-# Clone the empty repo (use the auth URL — username is literally 'git')
+# Option A — embed in the URL (quick, but the token shows up in error messages and shell history):
+git clone "https://git:$HYPHA_TOKEN@hypha.aicell.io/ri-scale/git/$ALIAS"
+
+# Option B — use GIT_ASKPASS so the token never lands in URL or git config (preferred for shared shells):
+printf '#!/bin/sh\necho "$HYPHA_TOKEN"\n' > /tmp/askpass.sh && chmod +x /tmp/askpass.sh
+GIT_ASKPASS=/tmp/askpass.sh git -c credential.helper= \
+  clone "https://git@hypha.aicell.io/ri-scale/git/$ALIAS"
+```
+
+Continuing with Option A for brevity:
+
+```bash
 git clone "https://git:$HYPHA_TOKEN@hypha.aicell.io/ri-scale/git/$ALIAS"
 cd "$ALIAS"
 
