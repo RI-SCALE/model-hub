@@ -193,13 +193,93 @@ const Docs: React.FC = () => {
                 </div>
              </div>
 
+             {/* Publication workflow — new section for the manifest.published change */}
+             <section id="publishing" className="bg-white border-2 border-orange-300 rounded-xl p-6 sm:p-8 shadow-sm">
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                   <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-orange-500 text-white">
+                      API CHANGE · JUNE 2026
+                   </span>
+                   <h2 className="text-xl font-semibold text-gray-900 m-0">4. Publish to the catalogue</h2>
+                </div>
+                <p className="text-gray-700 mb-4 text-sm leading-relaxed">
+                   The public catalogue at <a href="https://modelhub.riscale.eu" className="text-ri-orange underline">modelhub.riscale.eu</a> now only shows artifacts the contributor has <strong>explicitly published</strong>. New uploads default to <strong>draft</strong> and stay hidden from the catalogue (visible only to their owner on the <Link to="/my-artifacts" className="text-ri-orange underline">My Artifacts</Link> page) until you flip <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">manifest.published</code> to the string <code className="text-xs bg-gray-100 px-1 py-0.5 rounded">"true"</code>.
+                </p>
+                <p className="text-gray-700 mb-5 text-sm">
+                   If your previous uploads aren't appearing in the catalogue, this is almost certainly why. Two ways forward:
+                </p>
+
+                <div className="grid lg:grid-cols-2 gap-5 mb-5">
+                   <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                         <h3 className="font-semibold text-gray-900 text-sm m-0">Mode A · Express (one call)</h3>
+                         <p className="text-xs text-gray-500 mt-0.5 m-0">Set the flag at create time — appears in catalogue immediately.</p>
+                      </div>
+                      <pre className="bg-gray-900 text-gray-100 text-xs font-mono p-4 m-0 overflow-x-auto whitespace-pre-wrap break-all">
+{`await am.create(
+    alias=...,
+    parent_id="ri-scale/ai-model-hub",
+    type="model",
+    manifest={
+        ...,
+        "published": "true",   # ← add this
+    },
+    config={"storage": "git"},
+    stage=False,
+)`}
+                      </pre>
+                   </div>
+
+                   <div className="border border-gray-200 rounded-lg overflow-hidden">
+                      <div className="bg-gray-50 px-4 py-2 border-b border-gray-200">
+                         <h3 className="font-semibold text-gray-900 text-sm m-0">Mode B · Safe (two-step)</h3>
+                         <p className="text-xs text-gray-500 mt-0.5 m-0">Create as draft, push files, then publish explicitly. Recommended.</p>
+                      </div>
+                      <pre className="bg-gray-900 text-gray-100 text-xs font-mono p-4 m-0 overflow-x-auto whitespace-pre-wrap break-all">
+{`# Existing create() — no change
+art = await am.create(alias=..., manifest={...},
+                      config={"storage": "git"}, stage=False)
+
+# git push files... then explicitly publish:
+current = await am.read(artifact_id=art.id)
+m = {**current["manifest"], "published": "true"}
+await am.edit(artifact_id=art.id, manifest=m, stage=True)
+await am.commit(artifact_id=art.id)`}
+                      </pre>
+                   </div>
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4 mb-5 text-sm">
+                   <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                      <strong className="text-amber-900 block mb-1">⚠ Value gotcha</strong>
+                      <span className="text-amber-900">
+                         Use the literal string <code className="text-xs bg-white px-1 py-0.5 rounded">"true"</code>, not the boolean. The catalogue filter coerces to string and a JSON boolean silently matches zero items.
+                      </span>
+                   </div>
+                   <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                      <strong className="text-blue-900 block mb-1">ℹ <code>am.publish()</code> is different</strong>
+                      <span className="text-blue-900">
+                         <code className="text-xs bg-white px-1 py-0.5 rounded">am.publish()</code> archives to Zenodo for a DOI — it does NOT control catalogue visibility.
+                      </span>
+                   </div>
+                </div>
+
+                <div className="flex flex-col sm:flex-row gap-3 items-start">
+                   <Link to="/my-artifacts" className="inline-flex items-center gap-1.5 px-4 py-2 bg-ri-orange text-white text-sm font-medium rounded-full hover:bg-orange-600 transition-colors">
+                      Manage in My Artifacts
+                   </Link>
+                   <a href="https://modelhub.riscale.eu/SKILL.md" target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 px-4 py-2 border border-gray-300 text-gray-700 text-sm font-medium rounded-full hover:border-ri-orange hover:text-ri-orange transition-colors">
+                      Full agent skill (SKILL.md) →
+                   </a>
+                </div>
+             </section>
+
              <section className="bg-orange-50 border border-orange-100 rounded-xl p-6">
                 <h3 className="text-lg font-semibold text-gray-900 mb-3 flex items-center gap-2">
                    <ShieldCheckIcon className="h-5 w-5 text-ri-orange" />
                    Quality & Standards
                 </h3>
                 <p className="text-gray-700 text-sm leading-relaxed">
-                   All uploaded models undergo a validation process to ensure they contain necessary metadata and file structures. 
+                   All uploaded models undergo a validation process to ensure they contain necessary metadata and file structures.
                    We encourage providing comprehensive descriptions to foster trust and reproducibility.
                 </p>
              </section>
