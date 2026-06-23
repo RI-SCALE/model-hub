@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useHyphaStore } from '../store/hyphaStore';
 import { Link } from 'react-router-dom';
+import AgentSkillBox from './AgentSkillBox';
 
 const PARENT_ID = 'ri-scale/ai-model-hub';
 const SERVER_URL = 'https://hypha.aicell.io';
@@ -498,6 +499,10 @@ const Upload: React.FC<UploadProps> = () => {
       </div>
 
       <div className="max-w-4xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+
+        {/* Agent Skill — collapsed by default; expands to a contribute-mode
+            instruction snippet + inline token generator */}
+        <AgentSkillBox mode="contribute" />
 
         {/* How it works */}
         <div className="bg-white rounded-xl border border-gray-200 p-6">

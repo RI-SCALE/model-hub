@@ -3,6 +3,7 @@ import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { useHyphaStore } from '../store/hyphaStore';
 import SearchBar from './SearchBar';
 import ArtifactCard from './ArtifactCard';
+import AgentSkillBox from './AgentSkillBox';
 import { Grid } from '@mui/material';
 
 interface ResourceGridProps {}
@@ -376,6 +377,11 @@ const ArtifactGrid: React.FC<ResourceGridProps> = () => {
               );
             })}
           </div>
+        </section>
+
+        {/* ─── Agent Skill (collapsed) ─── */}
+        <section className="py-6 border-b border-gray-100">
+          <AgentSkillBox mode="explore" />
         </section>
 
         {/* ─── Search bar ─── */}
