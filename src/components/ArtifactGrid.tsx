@@ -20,14 +20,6 @@ const PHRASES = [
   "synthetic data generation",
 ];
 
-const DOMAINS: { label: string; query: string }[] = [
-  { label: "Life sciences",      query: "cell" },
-  { label: "Climate science",    query: "climate" },
-  { label: "Earth observation",  query: "radar" },
-  { label: "Medical imaging",    query: "medical" },
-  { label: "Materials & physics", query: "materials" },
-  { label: "All domains",        query: "" },
-];
 
 interface PaginationProps {
   currentPage: number;
@@ -344,48 +336,13 @@ const ArtifactGrid: React.FC<ResourceGridProps> = () => {
           </div>
         </section>
 
-        {/* ─── Domain quick-filter pills ─── */}
-        <section className="py-7 border-b border-gray-100">
-          <div className="flex items-baseline justify-between mb-4">
-            <span className="text-xs font-semibold tracking-[0.16em] uppercase text-gray-500">
-              Browse by domain
-            </span>
-            <span className="text-xs text-gray-400 hidden sm:block">
-              Filters the search below
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {DOMAINS.map((d) => {
-              const isActive = searchQuery === d.query;
-              return (
-                <button
-                  key={d.label}
-                  onClick={() => {
-                    handleSearchChange(d.query);
-                    setIsTyping(false);
-                    setServerSearchQuery(d.query);
-                    setCurrentPage(1);
-                  }}
-                  className={`px-4 py-1.5 rounded-full text-sm font-medium border transition-colors ${
-                    isActive
-                      ? 'bg-ri-black text-white border-ri-black'
-                      : 'bg-white text-gray-700 border-gray-200 hover:border-ri-orange hover:text-ri-orange'
-                  }`}
-                >
-                  {d.label}
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
         {/* ─── Agent Skill (collapsed) ─── */}
-        <section className="py-6 border-b border-gray-100">
+        <section className="py-3">
           <AgentSkillBox mode="explore" />
         </section>
 
         {/* ─── Search bar ─── */}
-        <div className="relative pt-8 mb-8 sm:mb-12">
+        <div className="relative pt-2 mb-5">
           <div className="flex flex-col sm:flex-row gap-6 items-start">
              <div className="flex-1 w-full">
                 <SearchBar
