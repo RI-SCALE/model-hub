@@ -38,6 +38,7 @@ const ArtifactDetails = () => {
   const { selectedResource, fetchResource, isLoading, error, user, isLoggedIn, artifactManager } = useHyphaStore();
   const [documentation, setDocumentation] = useState<string | null>(null);
   const [docLoading, setDocLoading] = useState(false);
+  const [cloneCardOpen, setCloneCardOpen] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [latestVersion, setLatestVersion] = useState<{
     version: string;
@@ -724,7 +725,7 @@ const ArtifactDetails = () => {
             </CardContent>
           </Card>
 
-          {/* Clone via Git Card — only for git-storage artifacts */}
+          {/* Clone via Git Card — collapsed by default, only for git-storage artifacts */}
           {(selectedResource as any).git_url && (
             <Card
               sx={{
@@ -735,10 +736,38 @@ const ArtifactDetails = () => {
               }}
             >
               <CardContent sx={{ p: { xs: 1, sm: 1.5, md: 2 } }}>
-                <Typography variant="h6" gutterBottom sx={{ fontWeight: 600, color: '#111827', fontSize: '1rem' }}>
-                  <CodeIcon sx={{ mr: 1, verticalAlign: 'text-bottom', fontSize: '1.1rem', color: '#f39200' }} />
-                  Clone via Git
-                </Typography>
+                <Box
+                  onClick={() => setCloneCardOpen(!cloneCardOpen)}
+                  sx={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    mb: cloneCardOpen ? 1 : 0,
+                  }}
+                >
+                  <Typography variant="h6" sx={{ fontWeight: 600, color: '#111827', fontSize: '1rem', m: 0 }}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f39200" strokeWidth="2"
+                         strokeLinecap="round" strokeLinejoin="round"
+                         style={{ verticalAlign: 'text-bottom', marginRight: 6 }}>
+                      <circle cx="6" cy="6" r="3"/>
+                      <circle cx="18" cy="6" r="3"/>
+                      <circle cx="6" cy="18" r="3"/>
+                      <path d="M6 9v6a3 3 0 0 0 3 3h6"/>
+                      <path d="M18 9v3a3 3 0 0 1-3 3H6"/>
+                    </svg>
+                    Clone via Git
+                  </Typography>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="2"
+                       style={{ transition: 'transform 0.2s', transform: cloneCardOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7"/>
+                  </svg>
+                </Box>
+
+              {cloneCardOpen && (
+                <>
+                <Box sx={{ mt: 1 }}>
                 <Typography variant="body2" sx={{ color: '#6b7280', mb: 1.5, fontSize: '0.875rem' }}>
                   Read-only clone of this model's repository — no authentication needed.
                 </Typography>
@@ -864,6 +893,9 @@ cd ${(selectedResource.alias || selectedResource.id.split('/').pop()) ?? 'model'
                     Copied to clipboard
                   </Typography>
                 )}
+                </Box>
+                </>
+              )}
               </CardContent>
             </Card>
           )}

@@ -440,7 +440,10 @@ const Upload: React.FC<UploadProps> = () => {
         parent_id: PARENT_ID,
         type: 'model',
         manifest,
-        config: { storage: 'git' },
+        // Created as a DRAFT (published=false). It won't appear in the
+        // public catalogue until the contributor clicks "Publish" on the
+        // My Artifacts card.
+        config: { storage: 'git', published: false },
         stage: false,
         _rkwargs: true,
       });

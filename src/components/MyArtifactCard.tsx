@@ -29,6 +29,11 @@ interface AdminResourceCardProps {
   emoji?: string;
   isLoading?: boolean;
   deletionRequestLoading?: boolean;
+  /** True if this artifact has config.published === true (visible in public catalogue). */
+  isPublished?: boolean;
+  /** Called when user clicks Publish or Unpublish — receives the new state. */
+  onTogglePublish?: (publish: boolean) => void;
+  publishLoading?: boolean;
 }
 
 const MyArtifactCard: React.FC<AdminResourceCardProps> = ({
@@ -51,6 +56,9 @@ const MyArtifactCard: React.FC<AdminResourceCardProps> = ({
   emoji,
   isLoading = false,
   deletionRequestLoading = false,
+  isPublished = false,
+  onTogglePublish,
+  publishLoading = false,
 }) => {
   const [showCopied, setShowCopied] = useState(false);
 
@@ -82,9 +90,13 @@ const MyArtifactCard: React.FC<AdminResourceCardProps> = ({
           <span className="inline-flex items-center rounded-md bg-yellow-50 px-2 py-1 text-xs font-medium text-yellow-800 ring-1 ring-inset ring-yellow-600/20">
             Staged
           </span>
-        ) : (
+        ) : isPublished ? (
           <span className="inline-flex items-center rounded-md bg-green-50 px-2 py-1 text-xs font-medium text-green-800 ring-1 ring-inset ring-green-600/20">
             Published
+          </span>
+        ) : (
+          <span className="inline-flex items-center rounded-md bg-orange-50 px-2 py-1 text-xs font-medium text-orange-800 ring-1 ring-inset ring-orange-600/20">
+            Draft
           </span>
         )}
         {status && <StatusBadge status={status} size="small" />}
@@ -171,6 +183,40 @@ const MyArtifactCard: React.FC<AdminResourceCardProps> = ({
                 <TrashIcon className="w-5 h-5" />
                 <span className="ml-1">Delete</span>
               </button>
+            )}
+            {onTogglePublish && !isStaged && (
+              isPublished ? (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onTogglePublish(false); }}
+                  className="flex items-center p-2 text-gray-600 hover:text-orange-600 rounded-lg hover:bg-orange-50 disabled:opacity-50"
+                  title="Remove this model from the public catalogue (returns it to draft)"
+                  disabled={isLoading || publishLoading}
+                >
+                  {publishLoading ? <CircularProgress size={16} /> : (
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                      <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                  )}
+                  <span className="ml-1">Unpublish</span>
+                </button>
+              ) : (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onTogglePublish(true); }}
+                  className="flex items-center p-2 text-white bg-orange-500 hover:bg-orange-600 rounded-lg disabled:opacity-50"
+                  title="Make this model visible in the public RI-SCALE Model Hub catalogue"
+                  disabled={isLoading || publishLoading}
+                >
+                  {publishLoading ? <CircularProgress size={16} sx={{ color: 'white' }} /> : (
+                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="17 8 12 3 7 8"/>
+                      <line x1="12" y1="3" x2="12" y2="15"/>
+                    </svg>
+                  )}
+                  <span className="ml-1">Publish</span>
+                </button>
+              )
             )}
           </div>
           

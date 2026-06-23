@@ -164,7 +164,11 @@ export const useHyphaStore = create<HyphaState>((set, get) => ({
       
       // Prepare filters object
       const filters: any = {};
-      
+
+      // Only show artifacts the contributor has explicitly published.
+      // Drafts (config.published !== true) are kept out of the public catalogue.
+      filters.config = { published: true };
+
       // Add type filter if resourceType is specified
       if (get().resourceType) {
         filters.type = get().resourceType;

@@ -51,7 +51,31 @@ const MyArtifacts: React.FC = () => {
   const [deleteLoading, setDeleteLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [serverSearchQuery, setServerSearchQuery] = useState('');
+  const [publishingId, setPublishingId] = useState<string | null>(null);
   const navigate = useNavigate();
+
+  const handleTogglePublish = async (artifact: Artifact, publish: boolean) => {
+    if (!artifactManager) return;
+    setPublishingId(artifact.id);
+    try {
+      const newConfig = { ...(artifact as any).config, published: publish };
+      await artifactManager.edit({
+        artifact_id: artifact.id,
+        config: newConfig,
+        stage: true,
+        _rkwargs: true,
+      });
+      await artifactManager.commit({
+        artifact_id: artifact.id,
+        _rkwargs: true,
+      });
+      await loadArtifacts();
+    } catch (e: any) {
+      alert(`Failed to ${publish ? 'publish' : 'unpublish'}: ${e?.message || e}`);
+    } finally {
+      setPublishingId(null);
+    }
+  };
 
   useEffect(() => {
     if (isLoggedIn && user) {
@@ -332,6 +356,9 @@ const MyArtifacts: React.FC = () => {
                     isStaged={!!artifact.staging}
                     artifactType={artifact.type}
                     isCollectionAdmin={isCollectionAdmin}
+                    isPublished={(artifact as any).config?.published === true}
+                    onTogglePublish={(publish) => handleTogglePublish(artifact, publish)}
+                    publishLoading={publishingId === artifact.id}
                   />
                 </div>
               ))}
