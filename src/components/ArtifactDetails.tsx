@@ -839,20 +839,17 @@ const ArtifactDetails = () => {
                       wordBreak: 'break-all',
                     }}
                   >
-{`GIT_LFS_SKIP_SMUDGE=1 git clone ${(selectedResource as any).git_url}
+{`git clone ${(selectedResource as any).git_url}
 cd ${(selectedResource.alias || selectedResource.id.split('/').pop()) ?? 'model'}
-# Large weights (LFS-tracked) come down as small pointer files.
-# Download the real bytes for each large file using its URL from the Files
-# list below, e.g.:
-#   curl -O "${(selectedResource as any).git_url?.replace('/git/', '/artifacts/')}/files/<filename>"`}
+# Large weights (LFS-tracked) are pulled automatically.
+# If you skipped the smudge, run: git lfs pull`}
                   </Typography>
                   <IconButton
                     size="small"
                     onClick={() => {
                       const dir = (selectedResource.alias || selectedResource.id.split('/').pop()) ?? 'model';
-                      const filesBase = (selectedResource as any).git_url?.replace('/git/', '/artifacts/');
                       navigator.clipboard.writeText(
-                        `GIT_LFS_SKIP_SMUDGE=1 git clone ${(selectedResource as any).git_url}\ncd ${dir}\n# Large weights (LFS-tracked) come down as small pointer files.\n# Download the real bytes for each large file using its URL from the Files\n# list below, e.g.:\n#   curl -O "${filesBase}/files/<filename>"`
+                        `git clone ${(selectedResource as any).git_url}\ncd ${dir}`
                       );
                       setShowCopied(true);
                       setTimeout(() => setShowCopied(false), 1500);
@@ -863,13 +860,6 @@ cd ${(selectedResource.alias || selectedResource.id.split('/').pop()) ?? 'model'
                     <ContentCopyIcon sx={{ fontSize: '1rem' }} />
                   </IconButton>
                 </Box>
-
-                <Typography variant="caption" sx={{ color: '#9b6800', fontSize: '0.75rem', display: 'block', mb: 1, backgroundColor: '#fff7e6', border: '1px solid #fcd49a', borderRadius: '4px', p: 0.75 }}>
-                  <strong>Note on Git LFS:</strong> the server-side LFS smudge endpoint is currently being fixed.
-                  Until then, use the <code>GIT_LFS_SKIP_SMUDGE=1</code> variant above and download large
-                  files individually from the Files list — they are served directly from object storage
-                  and work today.
-                </Typography>
 
                 <Typography variant="caption" sx={{ color: '#9ca3af', fontSize: '0.75rem', display: 'block' }}>
                   To upload a new version or contribute changes, open this model in the{' '}
