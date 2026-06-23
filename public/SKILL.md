@@ -283,17 +283,32 @@ asyncio.run(create())
 - **Username:** the literal string `git` — NOT your email, NOT `x`, NOT the token itself.
 - **Password:** your Hypha API token from §4a.
 
-Two equivalent ways to pass these:
+Three equivalent ways to pass these — Option B (askpass) is the most robust because it works around the macOS-credential-helper pitfall described below:
 
 ```bash
-# Option A — embed in the URL (quick, but the token shows up in error messages and shell history):
+# Option A — embed in the URL (quick, but token leaks into error messages + shell history):
 git clone "https://git:$HYPHA_TOKEN@hypha.aicell.io/ri-scale/git/$ALIAS"
 
-# Option B — use GIT_ASKPASS so the token never lands in URL or git config (preferred for shared shells):
+# Option B — GIT_ASKPASS so the token never lands in URL, history, or git config
+#            (preferred — also bypasses the macOS keychain trap below):
 printf '#!/bin/sh\necho "$HYPHA_TOKEN"\n' > /tmp/askpass.sh && chmod +x /tmp/askpass.sh
 GIT_ASKPASS=/tmp/askpass.sh git -c credential.helper= \
   clone "https://git@hypha.aicell.io/ri-scale/git/$ALIAS"
 ```
+
+**macOS keychain trap — read this if `git push` returns "Authentication failed":**
+On macOS, the default `credential.helper=osxkeychain` hijacks the Basic-Auth
+exchange: it serves a stale cached credential, gets rejected, runs `erase`,
+and never falls back to `GIT_ASKPASS`. The error message is a flat
+"Authentication failed" with NO hint that your real token was never tried.
+Fix: pass `-c credential.helper=` on every git invocation (Option B above
+does this) to disable the helper for that command.
+
+**Do NOT use `http.extraHeader` to inject the token.** It's the natural
+workaround for the macOS issue, but it backfires: the header sticks to the
+presigned S3 LFS upload URLs that already carry their own `X-Amz-*` query
+auth → S3 rejects with HTTP 403 "multiple auth mechanisms", and the error
+message points away from the actual cause. Use askpass instead.
 
 Continuing with Option A for brevity:
 
@@ -400,7 +415,7 @@ Only the artifact's creator can delete it. Other authenticated users get a permi
 - **Alias naming**: lowercase letters, digits, and hyphens; max 48 chars; must not collide with an existing alias under `ai-model-hub`. Pick something descriptive (`cellpose-lymph-node-segmentation`, not `model-v4`).
 - **Drafts are creator-only in the catalogue**: a draft artifact (`manifest.published: false`) is not listed in the public catalogue, but its files may still be readable if someone has the URL. Treat drafts as semi-private, not secret.
 - **`manifest.published` must live on the manifest, not config.** Hypha silently strips non-allowlisted keys from `config` on read, so `config.published` round-trips as `null` and the catalogue filter sees everything. Always update + read `manifest.published`.
-- **The filter value must be the string `"true"`**, not the JSON boolean `true`. Sending the boolean matches nothing and silently returns zero items even when the data is there. (Hypha coerces both sides to strings before comparing.)
+- **`manifest.published` value semantics — string `"true"` is the safe default.** The stored value can be a Python `True`, JSON `true`, or the string `"true"` — all three persist and round-trip. But when you build the catalogue filter, you MUST send the literal string `"true"` (`{"manifest":{"published":"true"}}`): Hypha coerces both sides to strings for comparison, and a JSON boolean filter silently returns zero items even when the data is there. To save mental cycles, just write the string `"true"` everywhere — at create, at edit, and at query — and you'll never hit the mismatch.
 - **`edit` replaces the manifest, doesn't merge** — when updating `manifest.published`, first GET the artifact's current manifest and re-send it whole with the flipped flag. Otherwise other fields (name, description, tags) get blown away.
 - **The server-side LFS-locking warning is harmless** — `git push` against an LFS-tracked file prints a warning saying the remote does not support the LFS locking API. Ignore it; the push still completes.
 - **`delete` response is the literal `null`** with HTTP 200 — don't parse it as a structured ack. After delete, the artifact's REST endpoint returns 404 but the git endpoint may return 401 (not 404). Both indicate the artifact is gone.
