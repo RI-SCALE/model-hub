@@ -956,10 +956,10 @@ cd ${(selectedResource.alias || selectedResource.id.split('/').pop()) ?? 'model'
             </Card>
           )}
 
-          {/* Versions Card */}
+          {/* Versions Card — handles both git branches and traditional versions */}
           {selectedResource.versions && selectedResource.versions.length > 0 && (
-            <Card 
-              sx={{ 
+            <Card
+              sx={{
                 mb: { xs: 1, sm: 2, md: 3 },
                 backgroundColor: '#ffffff',
                 border: '1px solid #e5e7eb',
@@ -973,56 +973,83 @@ cd ${(selectedResource.alias || selectedResource.id.split('/').pop()) ?? 'model'
                   Versions
                 </Typography>
                 <Stack spacing={2}>
-                  {[...selectedResource.versions].reverse().map((version, index) => (
-                    <Box key={version.version}>
-                      <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <RouterLink 
-                          to={`/artifacts/${selectedResource.id.split('/').pop()}/${version.version}`}
-                          style={{ textDecoration: 'none', color: 'inherit' }}
-                        >
-                          <Typography 
-                            variant="subtitle2" 
-                            sx={{ 
-                              fontWeight: 500,
-                              cursor: 'pointer',
-                              color: '#4b5563',
-                              '&:hover': {
-                                color: '#f39200',
-                                textDecoration: 'underline'
-                              }
-                            }}
+                  {[...selectedResource.versions].reverse().map((entry: any, index) => {
+                    // Detect schema: git-branch entries have name/sha/default;
+                    // traditional version entries have version/created_at/comment.
+                    const isGitBranch = !!entry.name && !!entry.sha;
+                    const label = isGitBranch
+                      ? entry.name
+                      : (entry.version || 'unknown');
+                    const isLatest = isGitBranch
+                      ? !!entry.default
+                      : entry.version === latestVersion?.version;
+                    const linkTarget = isGitBranch
+                      ? `/artifacts/${selectedResource.id.split('/').pop()}`
+                      : `/artifacts/${selectedResource.id.split('/').pop()}/${entry.version}`;
+                    const shaShort = isGitBranch ? String(entry.sha).slice(0, 8) : null;
+                    const ts = isGitBranch
+                      ? selectedResource.last_modified || selectedResource.created_at
+                      : entry.created_at;
+                    const dateStr = ts ? formatTimestamp(ts) : null;
+
+                    return (
+                      <Box key={`${label}-${index}`}>
+                        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                          <RouterLink
+                            to={linkTarget}
+                            style={{ textDecoration: 'none', color: 'inherit' }}
                           >
-                            {version.version}
+                            <Typography
+                              variant="subtitle2"
+                              sx={{
+                                fontWeight: 500,
+                                cursor: 'pointer',
+                                color: '#4b5563',
+                                '&:hover': {
+                                  color: '#f39200',
+                                  textDecoration: 'underline'
+                                }
+                              }}
+                            >
+                              {isGitBranch ? `${label} branch` : label}
+                            </Typography>
+                          </RouterLink>
+                          {isLatest && (
+                            <Chip
+                              label={isGitBranch ? 'Default' : 'Latest'}
+                              size="small"
+                              sx={{
+                                backgroundColor: 'rgba(243, 146, 0, 0.1)',
+                                color: '#f39200',
+                                borderRadius: '4px',
+                                fontWeight: 600,
+                                height: '20px',
+                                fontSize: '0.7rem'
+                              }}
+                            />
+                          )}
+                        </Box>
+                        {shaShort && (
+                          <Typography variant="caption" sx={{ color: '#6b7280', fontFamily: 'monospace', display: 'block' }}>
+                            sha: {shaShort}
                           </Typography>
-                        </RouterLink>
-                        {version.version === latestVersion?.version && (
-                          <Chip 
-                            label="Latest" 
-                            size="small" 
-                            sx={{
-                              backgroundColor: 'rgba(243, 146, 0, 0.1)',
-                              color: '#f39200',
-                              borderRadius: '4px',
-                              fontWeight: 600,
-                              height: '20px',
-                              fontSize: '0.7rem'
-                            }}
-                          />
+                        )}
+                        {dateStr && (
+                          <Typography variant="caption" color="text.secondary">
+                            {isGitBranch ? 'Updated ' : ''}{dateStr}
+                          </Typography>
+                        )}
+                        {entry.comment && (
+                          <Typography variant="body2" sx={{ mt: 0.5, color: '#4b5563' }}>
+                            {entry.comment}
+                          </Typography>
+                        )}
+                        {index < selectedResource.versions.length - 1 && (
+                          <Divider sx={{ my: 1.5 }} />
                         )}
                       </Box>
-                      <Typography variant="caption" color="text.secondary">
-                        {formatTimestamp(version.created_at)}
-                      </Typography>
-                      {version.comment && (
-                        <Typography variant="body2" sx={{ mt: 0.5, color: '#4b5563' }}>
-                          {version.comment}
-                        </Typography>
-                      )}
-                      {index < selectedResource.versions.length - 1 && (
-                        <Divider sx={{ my: 1.5 }} />
-                      )}
-                    </Box>
-                  ))}
+                    );
+                  })}
                 </Stack>
               </CardContent>
             </Card>
