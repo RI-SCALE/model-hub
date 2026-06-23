@@ -83,7 +83,14 @@ curl 'https://hypha.aicell.io/ri-scale/artifacts/cellpose-lymph-node-segmentatio
 
 The interesting top-level fields are `manifest`, `config`, `created_at`, `last_modified`, `view_count`, `download_count`, `versions` (array of git branches). `git_url` is present on artifacts with `config.storage == "git"`, but if it's missing you can always construct it as `https://hypha.aicell.io/ri-scale/git/<alias>`.
 
-**Canonical "known-good" model for smoke tests:** `cellpose-lymph-node-segmentation`. It has a real README, real LFS-backed weights, real RDF metadata. Use it to verify clone + smudge before testing your own upload flow.
+**Canonical "known-good" models for smoke tests:**
+
+| Model | Use for |
+|---|---|
+| `cellpose-lymph-node-segmentation` | Cleanest README + manifest example to study and imitate (small repo, README-only). |
+| `densesimsiam-cryosiam` | Largest repo in the catalogue (~130 MB zip + cover images) — best for exercising the *download* path without needing to upload first. |
+
+For testing the **LFS round-trip specifically** (smudge filter on download), the most reliable path is the upload-then-re-clone roundtrip described in §4: push your own small LFS-tracked binary, then anonymous-clone it back. That's the only path guaranteed to exercise `git lfs install` + the smudge filter end-to-end.
 
 ### List files in a model
 
