@@ -52,21 +52,27 @@ Each model artifact has:
 ### List all models in the public catalogue
 
 ```bash
-curl 'https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?pagination=true&offset=0&limit=20&order_by=last_modified>'
+curl 'https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?pagination=true&offset=0&limit=20&order_by=last_modified'
 ```
 
-Returns `{ items: [...], total: N, offset, limit }`. Each item has `alias`, `manifest.name`, `manifest.description`, `manifest.tags`, `type`, etc.
+With `pagination=true` the response is `{ items: [...], total: N, offset, limit }`. **Without** `pagination=true`, the same endpoint returns a **bare array** (no wrapper) — pick one and stick with it. Each item has `alias`, `manifest.name`, `manifest.description`, `manifest.tags`, `type`, etc.
 
 ### Keyword + filter search
 
+To only return models the contributor has explicitly **published** (drafts excluded), filter on `manifest.published`. Two quirks worth knowing:
+
+1. The filter value MUST be the literal string `"true"` (Hypha coerces both sides to strings before comparing — sending the JSON boolean `true` matches nothing, silently).
+2. `manifest.published` lives on the **manifest**, not on `config`. Hypha silently strips non-allowlisted keys from `config` on read, so any `config.published` field round-trips as `null` and the filter is useless.
+
 ```bash
-curl 'https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?keywords=cell,segmentation&filters=%7B%22type%22%3A%22model%22%2C%22config%22%3A%7B%22published%22%3Atrue%7D%7D'
+# URL-encoded filter: {"type":"model","manifest":{"published":"true"}}
+curl 'https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?pagination=true&keywords=cell,segmentation&filters=%7B%22type%22%3A%22model%22%2C%22manifest%22%3A%7B%22published%22%3A%22true%22%7D%7D'
 ```
 
 Filter JSON example (URL-encode before sending):
 
 ```json
-{ "type": "model", "manifest": { "published": true } }
+{ "type": "model", "manifest": { "published": "true" } }
 ```
 
 ### Inspect a single model
@@ -75,7 +81,9 @@ Filter JSON example (URL-encode before sending):
 curl 'https://hypha.aicell.io/ri-scale/artifacts/cellpose-lymph-node-segmentation' | jq .
 ```
 
-The interesting top-level fields are `manifest`, `git_url`, `config`, `created_at`, `last_modified`, `view_count`, `download_count`, `versions` (array of git branches).
+The interesting top-level fields are `manifest`, `config`, `created_at`, `last_modified`, `view_count`, `download_count`, `versions` (array of git branches). `git_url` is present on artifacts with `config.storage == "git"`, but if it's missing you can always construct it as `https://hypha.aicell.io/ri-scale/git/<alias>`.
+
+**Canonical "known-good" model for smoke tests:** `cellpose-lymph-node-segmentation`. It has a real README, real LFS-backed weights, real RDF metadata. Use it to verify clone + smudge before testing your own upload flow.
 
 ### List files in a model
 
@@ -247,6 +255,10 @@ EOF
 # Drop the weights into the repo:
 cp /path/to/weights.pt .
 
+# Set git identity if it's not already configured (fresh containers won't have one)
+git config user.email "you@example.com"
+git config user.name "Your Name"
+
 git add README.md rdf.yaml weights.pt
 git commit -m "Initial upload"
 
@@ -314,9 +326,16 @@ Only the artifact's creator can delete it. Other authenticated users get a permi
 - **Alias naming**: lowercase letters, digits, and hyphens; max 48 chars; must not collide with an existing alias under `ai-model-hub`. Pick something descriptive (`cellpose-lymph-node-segmentation`, not `model-v4`).
 - **Drafts are creator-only in the catalogue**: a draft artifact (`manifest.published: false`) is not listed in the public catalogue, but its files may still be readable if someone has the URL. Treat drafts as semi-private, not secret.
 - **`manifest.published` must live on the manifest, not config.** Hypha silently strips non-allowlisted keys from `config` on read, so `config.published` round-trips as `null` and the catalogue filter sees everything. Always update + read `manifest.published`.
+- **The filter value must be the string `"true"`**, not the JSON boolean `true`. Sending the boolean matches nothing and silently returns zero items even when the data is there. (Hypha coerces both sides to strings before comparing.)
 - **`edit` replaces the manifest, doesn't merge** — when updating `manifest.published`, first GET the artifact's current manifest and re-send it whole with the flipped flag. Otherwise other fields (name, description, tags) get blown away.
 - **The server-side LFS-locking warning is harmless** — `git push` against an LFS-tracked file prints a warning saying the remote does not support the LFS locking API. Ignore it; the push still completes.
-- **`delete` response is the literal `null`** with HTTP 200 — don't parse it as a structured ack.
+- **`delete` response is the literal `null`** with HTTP 200 — don't parse it as a structured ack. After delete, the artifact's REST endpoint returns 404 but the git endpoint may return 401 (not 404). Both indicate the artifact is gone.
+- **Git identity is required for `git commit`** — fresh containers / CI environments have no `user.email` / `user.name`. Set them locally before the first commit:
+  ```bash
+  git config user.email "you@example.com"
+  git config user.name "Your Name"
+  ```
+- **The listing endpoint returns two shapes** — bare array without `pagination=true`, paginated `{items, total, offset, limit}` wrapper with it. Use `pagination=true` consistently if you want to write a `jq .items[]` pipeline.
 - **Permissions for delete**: the ai-model-hub collection grants `@` (any authenticated user) broad permissions, but Hypha enforces creator-only delete at the artifact level — a malicious authenticated user cannot wipe other people's models.
 
 ---
@@ -343,6 +362,8 @@ git lfs track "*.pt"
 git add .gitattributes
 echo "# Widget Detector 2026" > README.md
 cp ~/yolov9-widgets.pt .
+git config user.email "you@example.com"  # fresh containers need an identity
+git config user.name "Your Name"
 git add README.md yolov9-widgets.pt
 git commit -m "Initial upload"
 git branch -M main
