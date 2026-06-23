@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useHyphaStore } from '../store/hyphaStore';
-import { Link } from 'react-router-dom';
+import { Link, Link as RouterLink } from 'react-router-dom';
 import AgentSkillBox from './AgentSkillBox';
 
 const PARENT_ID = 'ri-scale/ai-model-hub';
@@ -189,12 +189,15 @@ interface ArtifactCardProps {
   server: any;
   expanded: boolean;
   onToggle: () => void;
+  onPublishToggle?: (publish: boolean) => Promise<void>;
+  publishLoading?: boolean;
 }
 
-const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded, onToggle }) => {
+const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded, onToggle, onPublishToggle, publishLoading = false }) => {
   const [gitAuthUrl, setGitAuthUrl] = useState<string | null>(null);
   const [generatingToken, setGeneratingToken] = useState(false);
   const [tokenExpiry, setTokenExpiry] = useState('7 days');
+  const isPublished = (artifact as any).manifest?.published === true;
 
   const expiryOptions = [
     { label: '1 hour', seconds: 3600 },
@@ -373,6 +376,56 @@ const ArtifactCard: React.FC<ArtifactCardProps> = ({ artifact, server, expanded,
               </p>
             )}
           </div>
+
+          {/* Publish CTA — last step in the upload flow */}
+          {onPublishToggle && (
+            <div className="rounded-lg border-2 border-dashed border-orange-300 bg-orange-50 p-4">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold ${isPublished ? 'bg-green-100 text-green-800' : 'bg-orange-200 text-orange-900'}`}>
+                      {isPublished ? 'Published' : 'Draft'}
+                    </span>
+                    <h4 className="text-sm font-semibold text-gray-900 m-0">
+                      {isPublished ? 'Your model is in the public catalogue' : 'Final step — publish to the catalogue'}
+                    </h4>
+                  </div>
+                  <p className="text-xs text-gray-700 m-0">
+                    {isPublished
+                      ? 'Anyone can find and download this model from the RI-SCALE Model Hub. You can take it back to a draft any time.'
+                      : 'You\'ve created the artifact and pushed your files. Until you click Publish, the model stays a private draft and is not listed in the public catalogue.'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => onPublishToggle(!isPublished)}
+                  disabled={publishLoading}
+                  className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-full text-sm font-semibold transition-colors disabled:opacity-50 ${
+                    isPublished
+                      ? 'text-orange-700 border border-orange-300 hover:bg-orange-100'
+                      : 'text-white bg-orange-500 hover:bg-orange-600 shadow-sm'
+                  }`}
+                >
+                  {publishLoading ? (
+                    <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="40" strokeDashoffset="10"/>
+                    </svg>
+                  ) : isPublished ? (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                  )}
+                  {isPublished ? 'Unpublish' : 'Publish to catalogue'}
+                </button>
+              </div>
+              <p className="text-[11px] text-gray-500 mt-3 pt-3 border-t border-orange-200">
+                You can manage this and all your other artifacts (publish / unpublish / edit / delete) from{' '}
+                <RouterLink to="/my-artifacts" className="text-orange-700 underline hover:text-orange-900 font-medium">
+                  My Artifacts
+                </RouterLink>{' '}
+                at any time.
+              </p>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -388,6 +441,7 @@ const Upload: React.FC<UploadProps> = () => {
   const [myArtifacts, setMyArtifacts] = useState<ArtifactItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [publishingId, setPublishingId] = useState<string | null>(null);
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -647,6 +701,29 @@ git push -u origin main`}
                   artifact={artifact}
                   server={server}
                   expanded={expandedId === artifact.id || expandedId === artifact.alias}
+                  publishLoading={publishingId === artifact.id}
+                  onPublishToggle={async (publish) => {
+                    if (!artifactManager) return;
+                    setPublishingId(artifact.id);
+                    try {
+                      const newManifest = { ...(artifact as any).manifest, published: publish };
+                      await artifactManager.edit({
+                        artifact_id: artifact.id,
+                        manifest: newManifest,
+                        stage: true,
+                        _rkwargs: true,
+                      });
+                      await artifactManager.commit({
+                        artifact_id: artifact.id,
+                        _rkwargs: true,
+                      });
+                      await fetchMyArtifacts();
+                    } catch (e: any) {
+                      alert(`Failed to ${publish ? 'publish' : 'unpublish'}: ${e?.message || e}`);
+                    } finally {
+                      setPublishingId(null);
+                    }
+                  }}
                   onToggle={() =>
                     setExpandedId(
                       expandedId === artifact.id || expandedId === artifact.alias
