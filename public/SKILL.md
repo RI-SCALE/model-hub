@@ -31,11 +31,16 @@ The user obtains an API token from the **Model Hub user menu → "Generate API k
 |---|---|
 | Catalogue collection | `https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub` |
 | List models | `https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children` |
-| Single model metadata | `https://hypha.aicell.io/ri-scale/artifacts/<alias>` |
-| Single model files | `https://hypha.aicell.io/ri-scale/artifacts/<alias>/files/` |
-| Single model file content | `https://hypha.aicell.io/ri-scale/artifacts/<alias>/files/<filename>` |
+| Single model metadata (REST) | `https://hypha.aicell.io/ri-scale/artifacts/<alias>` |
+| Single model files (REST) | `https://hypha.aicell.io/ri-scale/artifacts/<alias>/files/` |
+| Single model file content (REST) | `https://hypha.aicell.io/ri-scale/artifacts/<alias>/files/<filename>` |
 | Git repo (read + write) | `https://hypha.aicell.io/ri-scale/git/<alias>` |
-| Public Model Hub page | `https://modelhub.riscale.eu/#/artifacts/ri-scale/<alias>` |
+| Public Model Hub web page | `https://modelhub.riscale.eu/#/artifacts/<alias>` |
+
+**URL conventions worth memorising:**
+
+- **Backend / REST + git URLs** include the `ri-scale/` workspace segment because the artifact-manager and git server are workspace-namespaced.
+- **The frontend page URL takes ONLY the alias** — `https://modelhub.riscale.eu/#/artifacts/<alias>`. **Do NOT** prefix it with `ri-scale/`; that produces a broken URL like `…/artifacts/ri-scale/<alias>` that the React router does not resolve to the right page. When generating links back to a user, the frontend takes the alias only; everything else takes `ri-scale/<alias>` or `<workspace>/<alias>`.
 
 Each model artifact has:
 
@@ -305,7 +310,7 @@ curl -fsS "https://hypha.aicell.io/ri-scale/artifacts/$ALIAS" | jq '.manifest.pu
 # expect: true
 ```
 
-The model will appear at `https://modelhub.riscale.eu/#/artifacts/ri-scale/$ALIAS` and in the public catalogue within seconds.
+The model will appear at `https://modelhub.riscale.eu/#/artifacts/$ALIAS` and in the public catalogue within seconds.
 
 ### 4e. Unpublish (return to draft)
 
@@ -393,7 +398,7 @@ curl -fsS -X POST \
 
 # Verify it landed
 curl -fsS "https://hypha.aicell.io/ri-scale/artifacts/$ALIAS" | jq '.manifest.published'
-echo "Live at https://modelhub.riscale.eu/#/artifacts/ri-scale/$ALIAS"
+echo "Live at https://modelhub.riscale.eu/#/artifacts/$ALIAS"
 ```
 
 ---
