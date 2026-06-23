@@ -747,16 +747,8 @@ const ArtifactDetails = () => {
                     mb: cloneCardOpen ? 1 : 0,
                   }}
                 >
-                  <Typography variant="h6" sx={{ fontWeight: 600, color: '#111827', fontSize: '1rem', m: 0 }}>
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f39200" strokeWidth="2"
-                         strokeLinecap="round" strokeLinejoin="round"
-                         style={{ verticalAlign: 'text-bottom', marginRight: 6 }}>
-                      <circle cx="6" cy="6" r="3"/>
-                      <circle cx="18" cy="6" r="3"/>
-                      <circle cx="6" cy="18" r="3"/>
-                      <path d="M6 9v6a3 3 0 0 0 3 3h6"/>
-                      <path d="M18 9v3a3 3 0 0 1-3 3H6"/>
-                    </svg>
+                  <Typography variant="h6" sx={{ fontWeight: 600, color: '#111827', fontSize: '1rem', m: 0, display: 'flex', alignItems: 'center' }}>
+                    <CodeIcon sx={{ mr: 1, fontSize: '1.1rem', color: '#f39200' }} />
                     Clone via Git
                   </Typography>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6b7280" strokeWidth="2"

@@ -215,8 +215,8 @@ const ArtifactFiles: React.FC<ArtifactFilesProps> = ({
           onClick={handleToggle}
         >
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
-            <Typography variant="h6" sx={{ fontWeight: 300, color: '#1f2937' }}>
-              <FolderIcon sx={{ mr: 1, verticalAlign: 'middle' }} />
+            <Typography variant="h6" sx={{ fontWeight: 600, color: '#111827', fontSize: '1rem' }}>
+              <FolderIcon sx={{ mr: 1, verticalAlign: 'text-bottom', fontSize: '1.1rem', color: '#f39200' }} />
               Files
             </Typography>
             {files.length > 0 && (
