@@ -136,7 +136,42 @@ The file endpoint serves directly from object storage. Use this when you only ne
 
 ## 4. Upload a new model (requires an API token)
 
-The flow is: **(a)** create the artifact via the artifact-manager API → **(b)** git clone the resulting empty repo → **(c)** add files, commit, push via git + LFS → **(d)** publish the artifact so it appears in the public catalogue.
+### Upload pipeline at a glance
+
+There are **two upload modes** — pick one based on whether you want a review
+step before the model goes public:
+
+**Mode A — Express (one create call, files appear in catalogue as they're pushed):**
+```
+create(manifest.published=true) → git push → done
+```
+Use this when you're confident the files will push cleanly and don't need
+a review step. The artifact appears in the public catalogue the moment
+`create()` returns (briefly with no files; populated as `git push` lands
+seconds later).
+
+**Mode B — Safe (default — two-step, with explicit publish):**
+```
+create(manifest.published=false) → git push → edit(manifest.published=true) + commit
+```
+Use this when you want to inspect the result before making it public, or
+when uploading takes time and you don't want an empty artifact card to
+appear in the catalogue. This is the default the Upload UI uses.
+
+**Either way, the steps below are the same** — only the value of
+`manifest.published` at `create()` time and the optional final publish call
+differ.
+
+> **A note on `am.publish()`** — there is a separate `publish()` method on
+> the artifact-manager. It does NOT control catalogue visibility (that's
+> `manifest.published`). `am.publish()` archives the artifact to an
+> **external** registry like Zenodo and mints a DOI for permanent
+> citation. Most agents don't need it; mention it only if the user asks
+> for a DOI or permanent citation handle.
+
+---
+
+The full step-by-step flow: **(a)** create the artifact via the artifact-manager API → **(b)** git clone the resulting empty repo → **(c)** add files, commit, push via git + LFS → **(d)** (Mode B only) flip `manifest.published` to `true` to make it appear in the catalogue.
 
 ### 4a. Obtain a token
 
