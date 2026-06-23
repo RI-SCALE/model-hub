@@ -272,7 +272,7 @@ const ArtifactGrid: React.FC<ResourceGridProps> = () => {
 
   return (
     <div className="w-full">
-      <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="max-w-[1200px] mx-auto px-4 sm:px-6 lg:px-8">
 
         {/* Show loading overlay when loading (but not when just typing) */}
         {loading && !isTyping && <LoadingOverlay />}
