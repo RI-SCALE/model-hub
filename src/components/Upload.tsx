@@ -433,6 +433,11 @@ const Upload: React.FC<UploadProps> = () => {
         description,
         documentation: 'README.md',
         format_version: '0.1.0',
+        // Created as a DRAFT (published=false). It won't appear in the
+        // public catalogue until the contributor clicks "Publish" on the
+        // My Artifacts card. We store the flag on the manifest (not config)
+        // because Hypha strips non-allowlisted config keys on read.
+        published: false,
       };
       if (user?.email) manifest.uploader = { email: user.email };
 
@@ -441,10 +446,7 @@ const Upload: React.FC<UploadProps> = () => {
         parent_id: PARENT_ID,
         type: 'model',
         manifest,
-        // Created as a DRAFT (published=false). It won't appear in the
-        // public catalogue until the contributor clicks "Publish" on the
-        // My Artifacts card.
-        config: { storage: 'git', published: false },
+        config: { storage: 'git' },
         stage: false,
         _rkwargs: true,
       });

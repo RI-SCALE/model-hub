@@ -41,7 +41,7 @@ Each model artifact has:
 
 - A short URL-safe **alias** (lowercase + hyphens), e.g. `cellpose-lymph-node-segmentation`.
 - A **manifest** with at least `name`, `description`, `type: model`, and ideally `tags`, `license`, `authors`, `documentation: README.md`.
-- A `config.storage: "git"` flag (the storage backend) and a `config.published: bool` flag (visibility in the public catalogue).
+- A `config.storage: "git"` flag (the storage backend) and a `manifest.published: bool` flag (visibility in the public catalogue — must live on the manifest, NOT config, because Hypha strips non-allowlisted keys from `config` on read).
 - A git repository with at least a `README.md` (the documentation) and ideally an `rdf.yaml` (BioImage Model Zoo–style metadata).
 - Optional: an `rdf.yaml`, `.gitattributes` configuring Git LFS, weight files (`*.pt`, `*.ckpt`, `*.h5`, `*.safetensors`, `*.pth`, `*.bin`), cover images, and citation files.
 
@@ -66,7 +66,7 @@ curl 'https://hypha.aicell.io/ri-scale/artifacts/ai-model-hub/children?keywords=
 Filter JSON example (URL-encode before sending):
 
 ```json
-{ "type": "model", "config": { "published": true } }
+{ "type": "model", "manifest": { "published": true } }
 ```
 
 ### Inspect a single model
@@ -160,9 +160,10 @@ curl -fsS -X POST \
     "tags": ["segmentation", "microscopy"],
     "license": "Apache-2.0",
     "documentation": "README.md",
-    "format_version": "0.1.0"
+    "format_version": "0.1.0",
+    "published": false
   },
-  "config": { "storage": "git", "published": false },
+  "config": { "storage": "git" },
   "stage": false
 }
 EOF
@@ -174,10 +175,10 @@ The response is the full artifact JSON. The useful fields:
 |---|---|
 | `id` | full id, e.g. `ri-scale/my-segmentation-model` — used by edit / commit / delete |
 | `alias` | the short alias |
-| `git_url` | the git endpoint to clone + push to in step 4c |
-| `config.published` | will be `false` — gets flipped to `true` in step 4d |
+| `git_url` | the git endpoint to clone + push to in step 4c (returned by `create`, may not be in subsequent reads — construct it as `https://hypha.aicell.io/ri-scale/git/<alias>` if absent) |
+| `manifest.published` | will be `false` — gets flipped to `true` in step 4d |
 
-The artifact is created as a **draft** (`config.published: false`). It will NOT appear in the public catalogue until you publish it in step 4d.
+The artifact is created as a **draft** (`manifest.published: false`). It will NOT appear in the public catalogue until you publish it in step 4d.
 
 Alternative: use the `hypha-rpc` Python client if the user prefers Python:
 
@@ -201,8 +202,9 @@ async def create():
             "tags": ["segmentation", "microscopy"],
             "license": "Apache-2.0",
             "documentation": "README.md",
+            "published": False,    # draft until you publish in step 4d
         },
-        config={"storage": "git", "published": False},
+        config={"storage": "git"},
         stage=False,
     )
     print(a.id, a.git_url)
@@ -258,14 +260,17 @@ git push -u origin main
 
 ### 4d. Publish the artifact
 
-After files are pushed, the artifact is still a draft. To list it in the public catalogue, call `edit` (with `stage: true`) then `commit`:
+After files are pushed, the artifact is still a draft. To list it in the public catalogue, you must update **`manifest.published`** (NOT `config.published` — Hypha strips that on read, so it'll silently not work). The pattern is `edit` (with `stage: true`) then `commit`. Crucially, **pass the FULL manifest** in the edit call — Hypha treats it as a replacement, not a merge:
 
 ```bash
+# Fetch current manifest first so we don't drop other fields
+CURRENT_MANIFEST=$(curl -fsS "https://hypha.aicell.io/ri-scale/artifacts/$ALIAS" | jq -c '.manifest + {published: true}')
+
 curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
   "https://hypha.aicell.io/public/services/artifact-manager/edit" \
-  -d "{\"artifact_id\":\"ri-scale/$ALIAS\",\"config\":{\"storage\":\"git\",\"published\":true},\"stage\":true}"
+  -d "{\"artifact_id\":\"ri-scale/$ALIAS\",\"manifest\":$CURRENT_MANIFEST,\"stage\":true}"
 
 curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
@@ -274,11 +279,18 @@ curl -fsS -X POST \
   -d "{\"artifact_id\":\"ri-scale/$ALIAS\"}"
 ```
 
+**Verify it landed** — re-read the artifact and confirm `manifest.published == true` before assuming success:
+
+```bash
+curl -fsS "https://hypha.aicell.io/ri-scale/artifacts/$ALIAS" | jq '.manifest.published'
+# expect: true
+```
+
 The model will appear at `https://modelhub.riscale.eu/#/artifacts/ri-scale/$ALIAS` and in the public catalogue within seconds.
 
 ### 4e. Unpublish (return to draft)
 
-Same as 4d but with `"published": false`. The artifact stays alive and the URL still works for the owner; it is just hidden from the public catalogue.
+Same as 4d but with `published: false`. The artifact stays alive and the URL still works for the owner; it is just hidden from the public catalogue.
 
 ### 4f. Delete an artifact
 
@@ -300,7 +312,11 @@ Only the artifact's creator can delete it. Other authenticated users get a permi
 - **LFS upload requires `git lfs install` + `git lfs track`** before the first `git add` of a binary. If you add a binary first then track it, it will be committed as a plain file.
 - **Token URL hygiene**: `https://git:$HYPHA_TOKEN@hypha.aicell.io/...` works for git, but the token is echoed back in error messages. Prefer `git config credential.helper` or environment-based auth for long sessions; in chat, never paste the full URL back to the user.
 - **Alias naming**: lowercase letters, digits, and hyphens; max 48 chars; must not collide with an existing alias under `ai-model-hub`. Pick something descriptive (`cellpose-lymph-node-segmentation`, not `model-v4`).
-- **Drafts are creator-only**: a draft artifact (`config.published: false`) is not listed in the public catalogue but its files may still be readable if someone has the URL. Treat drafts as semi-private, not secret.
+- **Drafts are creator-only in the catalogue**: a draft artifact (`manifest.published: false`) is not listed in the public catalogue, but its files may still be readable if someone has the URL. Treat drafts as semi-private, not secret.
+- **`manifest.published` must live on the manifest, not config.** Hypha silently strips non-allowlisted keys from `config` on read, so `config.published` round-trips as `null` and the catalogue filter sees everything. Always update + read `manifest.published`.
+- **`edit` replaces the manifest, doesn't merge** — when updating `manifest.published`, first GET the artifact's current manifest and re-send it whole with the flipped flag. Otherwise other fields (name, description, tags) get blown away.
+- **The server-side LFS-locking warning is harmless** — `git push` against an LFS-tracked file prints a warning saying the remote does not support the LFS locking API. Ignore it; the push still completes.
+- **`delete` response is the literal `null`** with HTTP 200 — don't parse it as a structured ack.
 - **Permissions for delete**: the ai-model-hub collection grants `@` (any authenticated user) broad permissions, but Hypha enforces creator-only delete at the artifact level — a malicious authenticated user cannot wipe other people's models.
 
 ---
@@ -317,7 +333,7 @@ curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
   "https://hypha.aicell.io/public/services/artifact-manager/create" \
-  -d "{\"alias\":\"$ALIAS\",\"parent_id\":\"ri-scale/ai-model-hub\",\"type\":\"model\",\"manifest\":{\"name\":\"Widget Detector 2026\",\"description\":\"YOLOv9 fine-tune for industrial widget detection.\",\"tags\":[\"object-detection\",\"yolo\"],\"license\":\"Apache-2.0\",\"documentation\":\"README.md\"},\"config\":{\"storage\":\"git\",\"published\":false},\"stage\":false}"
+  -d "{\"alias\":\"$ALIAS\",\"parent_id\":\"ri-scale/ai-model-hub\",\"type\":\"model\",\"manifest\":{\"name\":\"Widget Detector 2026\",\"description\":\"YOLOv9 fine-tune for industrial widget detection.\",\"tags\":[\"object-detection\",\"yolo\"],\"license\":\"Apache-2.0\",\"documentation\":\"README.md\",\"published\":false},\"config\":{\"storage\":\"git\"},\"stage\":false}"
 
 # Step 2 — git push
 git clone "https://git:$HYPHA_TOKEN@hypha.aicell.io/ri-scale/git/$ALIAS"
@@ -332,12 +348,13 @@ git commit -m "Initial upload"
 git branch -M main
 git push -u origin main
 
-# Step 3 — publish
+# Step 3 — publish (set manifest.published=true, NOT config.published)
+M=$(curl -fsS "https://hypha.aicell.io/ri-scale/artifacts/$ALIAS" | jq -c '.manifest + {published: true}')
 curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
   "https://hypha.aicell.io/public/services/artifact-manager/edit" \
-  -d "{\"artifact_id\":\"ri-scale/$ALIAS\",\"config\":{\"storage\":\"git\",\"published\":true},\"stage\":true}"
+  -d "{\"artifact_id\":\"ri-scale/$ALIAS\",\"manifest\":$M,\"stage\":true}"
 
 curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
@@ -345,6 +362,8 @@ curl -fsS -X POST \
   "https://hypha.aicell.io/public/services/artifact-manager/commit" \
   -d "{\"artifact_id\":\"ri-scale/$ALIAS\"}"
 
+# Verify it landed
+curl -fsS "https://hypha.aicell.io/ri-scale/artifacts/$ALIAS" | jq '.manifest.published'
 echo "Live at https://modelhub.riscale.eu/#/artifacts/ri-scale/$ALIAS"
 ```
 

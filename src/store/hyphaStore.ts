@@ -166,8 +166,11 @@ export const useHyphaStore = create<HyphaState>((set, get) => ({
       const filters: any = {};
 
       // Only show artifacts the contributor has explicitly published.
-      // Drafts (config.published !== true) are kept out of the public catalogue.
-      filters.config = { published: true };
+      // Drafts (manifest.published !== true) are kept out of the public catalogue.
+      // NOTE: must use manifest.published, not config.published — Hypha strips
+      // non-allowlisted keys from `config` on read, so a config-level flag
+      // never round-trips and the filter silently returns everything.
+      filters.manifest = { published: true };
 
       // Add type filter if resourceType is specified
       if (get().resourceType) {

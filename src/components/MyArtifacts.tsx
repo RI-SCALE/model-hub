@@ -58,10 +58,13 @@ const MyArtifacts: React.FC = () => {
     if (!artifactManager) return;
     setPublishingId(artifact.id);
     try {
-      const newConfig = { ...(artifact as any).config, published: publish };
+      // Flip manifest.published. We use manifest (not config) because Hypha
+      // strips non-allowlisted config keys on read, so a config-level flag
+      // would silently fail to persist for the catalogue filter.
+      const newManifest = { ...(artifact as any).manifest, published: publish };
       await artifactManager.edit({
         artifact_id: artifact.id,
-        config: newConfig,
+        manifest: newManifest,
         stage: true,
         _rkwargs: true,
       });
@@ -356,7 +359,7 @@ const MyArtifacts: React.FC = () => {
                     isStaged={!!artifact.staging}
                     artifactType={artifact.type}
                     isCollectionAdmin={isCollectionAdmin}
-                    isPublished={(artifact as any).config?.published === true}
+                    isPublished={(artifact as any).manifest?.published === true}
                     onTogglePublish={(publish) => handleTogglePublish(artifact, publish)}
                     publishLoading={publishingId === artifact.id}
                   />
