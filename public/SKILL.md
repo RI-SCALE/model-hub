@@ -134,18 +134,25 @@ export HYPHA_TOKEN='<paste here>'
 
 ### 4b. Create the artifact (artifact-manager REST)
 
+The artifact-manager service is registered in the `public` workspace, so the
+REST URL is `https://hypha.aicell.io/public/services/artifact-manager/<method>`.
+The `parent_id` MUST be the **fully qualified** id of the collection
+(`ri-scale/ai-model-hub`), not just the alias — because the token's home
+workspace is your own personal one, and the artifact lives in the cross-
+workspace `ri-scale` namespace.
+
 ```bash
 # alias must be lowercase, hyphens only, 1–48 chars
 ALIAS='my-segmentation-model'
 
-curl -X POST \
+curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
-  "https://hypha.aicell.io/ri-scale/artifact-manager/create" \
+  "https://hypha.aicell.io/public/services/artifact-manager/create" \
   -d @- <<EOF
 {
   "alias": "$ALIAS",
-  "parent_id": "ai-model-hub",
+  "parent_id": "ri-scale/ai-model-hub",
   "type": "model",
   "manifest": {
     "name": "My Segmentation Model",
@@ -161,6 +168,15 @@ curl -X POST \
 EOF
 ```
 
+The response is the full artifact JSON. The useful fields:
+
+| Field | Use |
+|---|---|
+| `id` | full id, e.g. `ri-scale/my-segmentation-model` — used by edit / commit / delete |
+| `alias` | the short alias |
+| `git_url` | the git endpoint to clone + push to in step 4c |
+| `config.published` | will be `false` — gets flipped to `true` in step 4d |
+
 The artifact is created as a **draft** (`config.published: false`). It will NOT appear in the public catalogue until you publish it in step 4d.
 
 Alternative: use the `hypha-rpc` Python client if the user prefers Python:
@@ -173,12 +189,11 @@ async def create():
     server = await connect_to_server({
         "server_url": "https://hypha.aicell.io",
         "token": "<paste token>",
-        "workspace": "ri-scale",
     })
     am = await server.get_service("public/artifact-manager")
     a = await am.create(
         alias="my-segmentation-model",
-        parent_id="ai-model-hub",
+        parent_id="ri-scale/ai-model-hub",   # full id, not just alias
         type="model",
         manifest={
             "name": "My Segmentation Model",
@@ -243,19 +258,19 @@ git push -u origin main
 
 ### 4d. Publish the artifact
 
-After files are pushed, the artifact is still a draft. To list it in the public catalogue:
+After files are pushed, the artifact is still a draft. To list it in the public catalogue, call `edit` (with `stage: true`) then `commit`:
 
 ```bash
-curl -X POST \
+curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
-  "https://hypha.aicell.io/ri-scale/artifact-manager/edit" \
+  "https://hypha.aicell.io/public/services/artifact-manager/edit" \
   -d "{\"artifact_id\":\"ri-scale/$ALIAS\",\"config\":{\"storage\":\"git\",\"published\":true},\"stage\":true}"
 
-curl -X POST \
+curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
-  "https://hypha.aicell.io/ri-scale/artifact-manager/commit" \
+  "https://hypha.aicell.io/public/services/artifact-manager/commit" \
   -d "{\"artifact_id\":\"ri-scale/$ALIAS\"}"
 ```
 
@@ -268,10 +283,10 @@ Same as 4d but with `"published": false`. The artifact stays alive and the URL s
 ### 4f. Delete an artifact
 
 ```bash
-curl -X POST \
+curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
-  "https://hypha.aicell.io/ri-scale/artifact-manager/delete" \
+  "https://hypha.aicell.io/public/services/artifact-manager/delete" \
   -d "{\"artifact_id\":\"ri-scale/$ALIAS\",\"delete_files\":true}"
 ```
 
@@ -296,12 +311,13 @@ Only the artifact's creator can delete it. Other authenticated users get a permi
 export HYPHA_TOKEN='<paste>'
 ALIAS='widget-detector-2026'
 
-# Step 1 — create the artifact (draft)
+# Step 1 — create the artifact (draft). Note the FULL parent_id and the
+# /public/services/artifact-manager/ URL prefix.
 curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
-  "https://hypha.aicell.io/ri-scale/artifact-manager/create" \
-  -d "{\"alias\":\"$ALIAS\",\"parent_id\":\"ai-model-hub\",\"type\":\"model\",\"manifest\":{\"name\":\"Widget Detector 2026\",\"description\":\"YOLOv9 fine-tune for industrial widget detection.\",\"tags\":[\"object-detection\",\"yolo\"],\"license\":\"Apache-2.0\",\"documentation\":\"README.md\"},\"config\":{\"storage\":\"git\",\"published\":false},\"stage\":false}"
+  "https://hypha.aicell.io/public/services/artifact-manager/create" \
+  -d "{\"alias\":\"$ALIAS\",\"parent_id\":\"ri-scale/ai-model-hub\",\"type\":\"model\",\"manifest\":{\"name\":\"Widget Detector 2026\",\"description\":\"YOLOv9 fine-tune for industrial widget detection.\",\"tags\":[\"object-detection\",\"yolo\"],\"license\":\"Apache-2.0\",\"documentation\":\"README.md\"},\"config\":{\"storage\":\"git\",\"published\":false},\"stage\":false}"
 
 # Step 2 — git push
 git clone "https://git:$HYPHA_TOKEN@hypha.aicell.io/ri-scale/git/$ALIAS"
@@ -320,13 +336,13 @@ git push -u origin main
 curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
-  "https://hypha.aicell.io/ri-scale/artifact-manager/edit" \
+  "https://hypha.aicell.io/public/services/artifact-manager/edit" \
   -d "{\"artifact_id\":\"ri-scale/$ALIAS\",\"config\":{\"storage\":\"git\",\"published\":true},\"stage\":true}"
 
 curl -fsS -X POST \
   -H "Authorization: Bearer $HYPHA_TOKEN" \
   -H 'Content-Type: application/json' \
-  "https://hypha.aicell.io/ri-scale/artifact-manager/commit" \
+  "https://hypha.aicell.io/public/services/artifact-manager/commit" \
   -d "{\"artifact_id\":\"ri-scale/$ALIAS\"}"
 
 echo "Live at https://modelhub.riscale.eu/#/artifacts/ri-scale/$ALIAS"
