@@ -189,8 +189,8 @@ const MyArtifacts: React.FC = () => {
 
   return (
     <div className="flex flex-col min-h-screen">
-      {/* Admin Info Box */}
-      {isCollectionAdmin && (
+      {/* Admin Info Box — disabled until the /review page is built */}
+      {false && isCollectionAdmin && (
         <div className="bg-blue-50 border-l-4 border-blue-400 p-4 mb-4 mx-4 mt-4">
           <div className="flex">
             <div className="flex-shrink-0">

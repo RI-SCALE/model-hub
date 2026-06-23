@@ -37,6 +37,7 @@ const ArtifactDetails = () => {
   const { workspace, id, version } = useParams<{ workspace?: string; id: string; version?: string }>();
   const { selectedResource, fetchResource, isLoading, error, user, isLoggedIn, artifactManager } = useHyphaStore();
   const [documentation, setDocumentation] = useState<string | null>(null);
+  const [docLoading, setDocLoading] = useState(false);
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [latestVersion, setLatestVersion] = useState<{
     version: string;
@@ -98,32 +99,46 @@ const ArtifactDetails = () => {
   }, [workspace, id, fetchResource, version]);
 
   useEffect(() => {
-    const fetchDocumentation = async () => {
-      if (selectedResource?.manifest.documentation) {
-        try {
-          const docUrl = resolveHyphaUrl(selectedResource.manifest.documentation, selectedResource.id, true);
+    let cancelled = false;
 
-          const response = await fetch(docUrl);
-          if (!response.ok) {
-            setDocumentation(null);
-          } else {
-            const text = await response.text();
-            setDocumentation(text);
-          }
-        } catch (error) {
-          console.error('Failed to fetch documentation:', error);
+    // Reset immediately so the previous model's README never bleeds into the new page.
+    setDocumentation(null);
+    setIsStaged(version === 'stage');
+
+    const docPath = selectedResource?.manifest.documentation;
+    const artifactId = selectedResource?.id;
+    if (!docPath || !artifactId) {
+      setDocLoading(false);
+      return;
+    }
+
+    setDocLoading(true);
+    const fetchDocumentation = async () => {
+      try {
+        const docUrl = resolveHyphaUrl(docPath, artifactId, true);
+        const response = await fetch(docUrl);
+        if (cancelled) return;
+        if (!response.ok) {
           setDocumentation(null);
+        } else {
+          const text = await response.text();
+          if (cancelled) return;
+          setDocumentation(text);
         }
-      }
-      else {
+      } catch (error) {
+        if (cancelled) return;
+        console.error('Failed to fetch documentation:', error);
         setDocumentation(null);
+      } finally {
+        if (!cancelled) setDocLoading(false);
       }
     };
 
-    setIsStaged(version === 'stage');
-
     fetchDocumentation();
-  }, [selectedResource?.id, selectedResource?.manifest.documentation]);
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedResource?.id, selectedResource?.manifest.documentation, version]);
 
   useEffect(() => {
     const checkStaticSite = async () => {
@@ -594,7 +609,24 @@ const ArtifactDetails = () => {
             }}
           >
             <CardContent sx={{ p: 0 }}>
-              {documentation ? (
+              {docLoading ? (
+                <Box
+                  sx={{
+                    padding: { xs: '48px', sm: '72px' },
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    color: '#9ca3af',
+                    minHeight: '180px',
+                  }}
+                >
+                  <CircularProgress size={32} sx={{ color: '#f39200', mb: 2 }} />
+                  <Typography variant="body2" sx={{ fontSize: '0.85rem', color: '#6b7280' }}>
+                    Loading documentation…
+                  </Typography>
+                </Box>
+              ) : documentation ? (
                 <Box
                   sx={{
                     padding: { xs: '12px', sm: '16px', md: '32px' },
