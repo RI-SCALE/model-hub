@@ -142,9 +142,10 @@ The flow is: **(a)** create the artifact via the artifact-manager API → **(b)*
 
 If the user has not provided one yet, ask them to:
 
-1. Open https://modelhub.riscale.eu
-2. Click their avatar / user menu → **"Generate API key"**
-3. Pick an expiry, click generate, copy the token, paste it back to this chat.
+1. Log in at https://modelhub.riscale.eu
+2. Go to the **Upload** page (top-right of the navbar, or directly at https://modelhub.riscale.eu/#/upload)
+3. Expand the artifact-skill panel at the top of the page, OR scroll to any existing artifact card and use the "Generate authenticated URL" controls — both flows show a row of expiry pills (1 hour / 24 hours / 7 days / 30 days). Pick one, click it, the token appears with a copy button.
+4. Copy the token, paste it back to this chat.
 
 Store the token in a local environment variable for the session:
 

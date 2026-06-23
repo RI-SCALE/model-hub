@@ -222,14 +222,6 @@ export default function LoginButton({ className = '' }: LoginButtonProps) {
                 API Documentation
               </Link>
 
-              {/* AI Agent skill + API key generation lives on the Upload page */}
-              <Link
-                to="/upload"
-                className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
-                onClick={() => setIsDropdownOpen(false)}
-              >
-                Generate API key
-              </Link>
               
               <button
                 onClick={handleLogout}
