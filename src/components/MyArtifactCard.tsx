@@ -161,70 +161,66 @@ const MyArtifactCard: React.FC<AdminResourceCardProps> = ({
           </div>
         </div>
 
-        <div className="flex justify-between items-center mt-4 border-t pt-4 flex-none">
-        
-          <div className="flex items-center space-x-2">
+        <div className="flex flex-wrap items-center gap-1.5 mt-4 border-t pt-3 flex-none">
+          <button
+            onClick={(e) => handleClick(e, onEdit)}
+            className="flex items-center px-2 py-1 text-xs text-gray-600 hover:text-blue-600 rounded hover:bg-blue-50 disabled:opacity-50"
+            title="Edit"
+            disabled={isLoading}
+          >
+            <PencilIcon className="w-4 h-4" />
+            <span className="ml-1">Edit</span>
+          </button>
+          {onDelete && (
             <button
-              onClick={(e) => handleClick(e, onEdit)}
-              className="flex items-center p-2 text-gray-600 hover:text-blue-600 rounded-lg hover:bg-blue-50"
-              title="Edit"
+              onClick={(e) => handleClick(e, onDelete)}
+              className="flex items-center px-2 py-1 text-xs text-gray-600 hover:text-red-600 rounded hover:bg-red-50 disabled:opacity-50"
+              title="Delete"
               disabled={isLoading}
             >
-              <PencilIcon className="w-5 h-5" />
-              <span className="ml-1">Edit</span>
+              <TrashIcon className="w-4 h-4" />
+              <span className="ml-1">Delete</span>
             </button>
-            {onDelete && (
+          )}
+          {onTogglePublish && !isStaged && (
+            isPublished ? (
               <button
-                onClick={(e) => handleClick(e, onDelete)}
-                className="flex items-center p-2 text-gray-600 hover:text-red-600 rounded-lg hover:bg-red-50"
-                title="Delete"
-                disabled={isLoading}
+                onClick={(e) => { e.stopPropagation(); onTogglePublish(false); }}
+                className="flex items-center px-2 py-1 text-xs text-gray-600 hover:text-orange-600 rounded hover:bg-orange-50 disabled:opacity-50"
+                title="Remove from public catalogue (returns to draft)"
+                disabled={isLoading || publishLoading}
               >
-                <TrashIcon className="w-5 h-5" />
-                <span className="ml-1">Delete</span>
+                {publishLoading ? <CircularProgress size={14} /> : (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                    <line x1="1" y1="1" x2="23" y2="23"/>
+                  </svg>
+                )}
+                <span className="ml-1">Unpublish</span>
               </button>
-            )}
-            {onTogglePublish && !isStaged && (
-              isPublished ? (
-                <button
-                  onClick={(e) => { e.stopPropagation(); onTogglePublish(false); }}
-                  className="flex items-center p-2 text-gray-600 hover:text-orange-600 rounded-lg hover:bg-orange-50 disabled:opacity-50"
-                  title="Remove this model from the public catalogue (returns it to draft)"
-                  disabled={isLoading || publishLoading}
-                >
-                  {publishLoading ? <CircularProgress size={16} /> : (
-                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-                      <line x1="1" y1="1" x2="23" y2="23"/>
-                    </svg>
-                  )}
-                  <span className="ml-1">Unpublish</span>
-                </button>
-              ) : (
-                <button
-                  onClick={(e) => { e.stopPropagation(); onTogglePublish(true); }}
-                  className="flex items-center p-2 text-white bg-orange-500 hover:bg-orange-600 rounded-lg disabled:opacity-50"
-                  title="Make this model visible in the public RI-SCALE Model Hub catalogue"
-                  disabled={isLoading || publishLoading}
-                >
-                  {publishLoading ? <CircularProgress size={16} sx={{ color: 'white' }} /> : (
-                    <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                      <polyline points="17 8 12 3 7 8"/>
-                      <line x1="12" y1="3" x2="12" y2="15"/>
-                    </svg>
-                  )}
-                  <span className="ml-1">Publish</span>
-                </button>
-              )
-            )}
-          </div>
-          
+            ) : (
+              <button
+                onClick={(e) => { e.stopPropagation(); onTogglePublish(true); }}
+                className="flex items-center px-2 py-1 text-xs text-white bg-orange-500 hover:bg-orange-600 rounded disabled:opacity-50"
+                title="Make this model visible in the public catalogue"
+                disabled={isLoading || publishLoading}
+              >
+                {publishLoading ? <CircularProgress size={14} sx={{ color: 'white' }} /> : (
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                )}
+                <span className="ml-1">Publish</span>
+              </button>
+            )
+          )}
           {downloadUrl && (
             <a
               href={downloadUrl}
               onClick={(e) => e.stopPropagation()}
-              className="text-sm text-blue-600 hover:text-blue-800"
+              className="ml-auto text-xs text-blue-600 hover:text-blue-800"
               target="_blank"
               rel="noopener noreferrer"
             >
