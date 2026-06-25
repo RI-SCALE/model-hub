@@ -425,7 +425,7 @@ Only the artifact's creator can delete it. Other authenticated users get a permi
   git config user.name "Your Name"
   ```
 - **The listing endpoint returns two shapes** — bare array without `pagination=true`, paginated `{items, total, offset, limit}` wrapper with it. Use `pagination=true` consistently if you want to write a `jq .items[]` pipeline.
-- **`git clone --depth=1` (shallow clone) is not supported.** Hypha's smart-HTTP server replies with `fatal: expected shallow/unshallow, got NAK`. Always do a full clone. Repos are git-pack-bounded so this is cheap; only the LFS blobs are large, and those download separately via the smudge filter regardless of shallow/full.
+- **`git clone --depth=N` (shallow clone) requires Hypha ≥ 0.21.103.** Earlier versions reject the shallow negotiation (`fatal: expected shallow/unshallow, got NAK` on ≤0.21.101; `fatal: git fetch-pack: expected shallow list` on 0.21.102, especially for single-commit repos). If you hit either error, fall back to a full clone — repos are git-pack-bounded so this is cheap, and LFS blobs download separately via the smudge filter regardless of shallow/full.
 - **Permissions for delete**: the ai-model-hub collection grants `@` (any authenticated user) broad permissions, but Hypha enforces creator-only delete at the artifact level — a malicious authenticated user cannot wipe other people's models.
 
 ---
