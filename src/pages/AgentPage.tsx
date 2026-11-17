@@ -66,6 +66,13 @@ const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
   { value: GPT4O_MINI_CHAT_MODEL, label: 'GPT-4o mini' },
 ];
 
+const EXAMPLE_PROMPTS = [
+  'Find fluorescence microscopy datasets of mouse brain',
+  'Show me confocal images of Drosophila',
+  'Which AI models can segment cells or nuclei?',
+  'Find a nuclei dataset and segment the cells with Cellpose-SAM',
+];
+
 const CHAT_MODEL_IDS = new Set(CHAT_MODEL_OPTIONS.map(option => option.value));
 const DEFAULT_DEV_CHAT_PROXY_APP_ID = 'chat-proxy-dev';
 const BRANCH_SPECIFIC_CHAT_PROXY_APP_ID = 'chat-proxy-dev-fix-bia-hit-extraction-and-branch-proxy';
@@ -1889,15 +1896,16 @@ _install_httpx_proxy_patch()
       }
   };
 
-  const handleSendMessage = async () => {
-    if (!input.trim() || !selectedAgent || !server) return;
+  const handleSendMessage = async (overrideText?: string) => {
+    const messageText = typeof overrideText === 'string' ? overrideText : input;
+    if (!messageText.trim() || !selectedAgent || !server) return;
 
     let requestSessionKey = getSessionKey(currentSessionId);
 
     const newMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
-      content: input,
+      content: messageText,
       timestamp: new Date(),
     };
 
@@ -3333,6 +3341,21 @@ await _chat_wrapper()
                 </select>
               </div>
 
+              {selectedAgent && isKernelReady && agentReady && !isTyping && !messages.some(m => m.role === 'user') && (
+                <div className="max-w-4xl mx-auto mb-2 flex flex-wrap gap-2" data-testid="example-prompts">
+                  {EXAMPLE_PROMPTS.map((prompt) => (
+                    <button
+                      key={prompt}
+                      type="button"
+                      onClick={() => handleSendMessage(prompt)}
+                      className="text-xs text-gray-700 bg-white border border-gray-300 rounded-full px-3 py-1.5 hover:border-ri-orange hover:text-ri-orange transition-colors text-left"
+                    >
+                      {prompt}
+                    </button>
+                  ))}
+                </div>
+              )}
+
               <div className={`max-w-4xl mx-auto relative flex items-end bg-white border border-gray-300 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-ri-orange focus-within:border-transparent transition-all ${(!isKernelReady || !agentReady) ? 'opacity-60 bg-gray-50' : ''}`}>
                 <textarea
                   ref={inputRef}
@@ -3345,7 +3368,7 @@ await _chat_wrapper()
                     ? "Initializing Python Kernel..." 
                     : !agentReady 
                         ? "Loading Agent Resources..." 
-                        : "Type a message..."
+                        : "Ask about datasets, images, or models, e.g. \"find HeLa cell images\""
                   }
                   className="flex-1 max-h-40 min-h-[50px] w-full bg-transparent border-0 focus:ring-0 focus:outline-none focus-visible:outline-none p-3 resize-none text-gray-800 placeholder-gray-400 disabled:cursor-not-allowed"
                   rows={1}
@@ -3361,7 +3384,7 @@ await _chat_wrapper()
                     </button>
                 ) : (
                     <button
-                      onClick={handleSendMessage}
+                      onClick={() => handleSendMessage()}
                       disabled={!input.trim() || isTyping || !isKernelReady || !agentReady}
                       className={`mb-2 mr-2 p-2 rounded-lg transition-colors ${
                         input.trim() && !isTyping && isKernelReady && agentReady

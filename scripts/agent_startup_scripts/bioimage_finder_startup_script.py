@@ -4,10 +4,6 @@ import importlib.util
 _to_install = []
 if not importlib.util.find_spec("hypha_rpc"):
     _to_install.append("hypha-rpc")
-if not importlib.util.find_spec("PIL"):
-    _to_install.append("pillow")
-if not importlib.util.find_spec("numcodecs"):
-    _to_install.append("numcodecs")
 if _to_install:
     await micropip.install(_to_install)
 
@@ -787,149 +783,39 @@ async def search_models(task: str, limit: int = 5) -> Dict[str, Any]:
 
 async def run_cellpose_on_image(image_url: str) -> str:
     """
-    Run Cellpose-SAM cell segmentation on an image from a URL and return
-    a segmentation overlay rendered as an inline Markdown image.
+    Segment cells in a dataset preview with Cellpose-SAM and return markdown
+    with the cell count, an overlay image and download links.
+
+    Runs entirely server-side: the chat-proxy fetches the image, calls the
+    BioEngine model-runner (Cellpose-SAM), renders the overlay and stores it
+    in a public Hypha artifact. No image bytes pass through this kernel.
 
     Args:
-        image_url: Direct URL to an image. Use the thumbnail_url field from
-            search_datasets() or search_images() results.
+        image_url: thumbnail_url from search_datasets() results (PNG or OME-Zarr).
 
     Returns:
-        Markdown string with cell count and an inline base64 segmentation overlay image.
+        Markdown (cell count + overlay image + links), or a message starting
+        with a warning sign explaining why no cells could be segmented.
     """
-    import io
-    import base64
-    import numpy as np
-    from PIL import Image
     from hypha_rpc import connect_to_server
 
-    # 1. Connect to Hypha and get chat proxy (all external requests go through it — CORS)
-    server = await connect_to_server({"server_url": "https://hypha.aicell.io"})
-    proxy = await server.get_service("ri-scale/default@chat-proxy")
-
-    async def _proxy_get_json(url):
-        import json as _json
-        r = await proxy.resolve_url(url=url)
-        if not r.get("ok"):
-            raise RuntimeError(f"Proxy fetch failed for {url}: {r.get('error')}")
-        if r.get("json"):
-            return r["json"]
-        if r.get("text"):
-            return _json.loads(r["text"])
-        if r.get("base64"):
-            return _json.loads(base64.b64decode(r["base64"]).decode())
-        raise RuntimeError(f"Empty proxy response for {url}")
-
-    async def _proxy_get_bytes(url):
-        r = await proxy.resolve_url(url=url)
-        if not r.get("ok"):
-            raise RuntimeError(f"Proxy fetch failed for {url}: {r.get('error')}")
-        return base64.b64decode(r["base64"])
-
-    # 2. Fetch image — OME-Zarr or direct image URL (all via proxy to bypass CORS)
-    if ".zarr" in image_url or ".ome.zarr" in image_url:
-        _base = image_url.rstrip("/")
-        _attrs = await _proxy_get_json(f"{_base}/.zattrs")
-        _datasets = _attrs["multiscales"][0]["datasets"]
-        _low = _datasets[-1]["path"]
-        _zmeta = await _proxy_get_json(f"{_base}/{_low}/.zarray")
-        _shape = _zmeta["shape"]   # (T, C, Z, Y, X)
-        _dtype = np.dtype(_zmeta["dtype"])
-        _h, _w = _shape[-2], _shape[-1]
-        _compressor = _zmeta.get("compressor")
-        _sep = _zmeta.get("dimension_separator", "/")
-
-        async def _fetch_chunk(c_idx):
-            # Build chunk indices: T=0, C=c_idx, Z=0, Y=0, X=0
-            idx = _sep.join(["0", str(c_idx), "0", "0", "0"])
-            _url = f"{_base}/{_low}/{idx}"
-            _raw = await _proxy_get_bytes(_url)
-            # Decompress
-            if _compressor:
-                import numcodecs
-                _codec = numcodecs.get_codec(_compressor)
-                _raw = _codec.decode(_raw)
-            elif len(_raw) != _h * _w * _dtype.itemsize:
-                import zlib as _zlib
-                try: _raw = _zlib.decompress(_raw)
-                except Exception: pass
-            return np.frombuffer(bytes(_raw), dtype=_dtype).reshape(_h, _w)
-
-        _channels = [await _fetch_chunk(_c) for _c in range(min(_shape[1], 3))]
-        _hwc = np.stack(_channels * (3 // len(_channels) + 1), axis=-1)[:, :, :3]
-        if _dtype != np.uint8:
-            _mn, _mx = float(_hwc.min()), float(_hwc.max())
-            _hwc = ((_hwc - _mn) / max(_mx - _mn, 1) * 255).astype(np.uint8)
-        img = Image.fromarray(_hwc.astype(np.uint8))
-    else:
-        fetch_result = await proxy.resolve_url(url=image_url)
-        if not fetch_result.get("ok") or not fetch_result.get("base64"):
-            raise RuntimeError(f"Could not fetch image via proxy: {fetch_result.get('error', 'unknown error')}")
-        img = Image.open(io.BytesIO(base64.b64decode(fetch_result["base64"]))).convert("RGB")
-
-    # Cap at 256px — keeps each JPEG under 12KB so two images fit in the stdout buffer
-    w, h = img.size
-    if max(w, h) > 256:
-        scale = 256 / max(w, h)
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-
-    # 6. Convert to (C, H, W) numpy array and check image quality
-    arr = np.array(img)
-    gray = arr.mean(axis=2)
-    contrast = float(gray.std())
-    bright_frac = float((gray > 80).mean())
-
-    # Warn early if the thumbnail is unlikely to contain segmentable cells:
-    # - very low contrast (flat/uniform image, no distinguishable structures)
-    # - almost entirely bright or entirely dark (overexposed / blank)
-    if contrast < 15:
-        return (
-            f"⚠️ The preview image has very low contrast (std={contrast:.1f}), which suggests it "
-            f"may be a flat or uniform frame not suitable for cell segmentation. "
-            f"Try a different dataset whose thumbnail shows individual cells or nuclei."
-        )
-    if bright_frac > 0.95 or bright_frac < 0.01:
-        return (
-            f"⚠️ The preview image appears {'nearly fully saturated' if bright_frac > 0.95 else 'almost completely dark'} "
-            f"(bright pixel fraction={bright_frac:.2f}), which makes cell detection unreliable. "
-            f"Try a dataset whose thumbnail clearly shows individual cells."
-        )
-
-    img_chw = np.transpose(arr, (2, 0, 1))
-
-    # 7. Run Cellpose inference via TUBITAK BioEngine worker.
-    #    output_format="url" makes the service render the overlay with a random
-    #    colormap, write full-precision labels (16-bit PNG + npy) to a fresh
-    #    Hypha artifact, and return markdown-ready URLs — no base64 round-trip.
-    cellpose = await server.get_service("ri-scale/cellpose-finetuning")
-    result = await cellpose.infer(
-        model="cpsam",
-        input_arrays=[img_chw],
-        output_format="url",
-        niter=250,
-        flow_threshold=0.4,
-        cellprob_threshold=0.0,
+    server = await connect_to_server(
+        {"server_url": "https://hypha.aicell.io", "method_timeout": 150}
     )
-    payload = result[0]["output"]
+    try:
+        proxy = await server.get_service("ri-scale/default@chat-proxy")
+        result = await proxy.segment_cells(image_url=image_url)
+    except Exception as exp:
+        return f"⚠️ Cell segmentation is temporarily unavailable ({_short_text(str(exp), 120)}). Please try again shortly."
+    finally:
+        try:
+            await server.disconnect()
+        except Exception:
+            pass
 
-    if not isinstance(payload, dict) or payload.get("encoding") != "hypha_artifact":
-        return (
-            "⚠️ Unexpected segmentation response format. "
-            "The Cellpose service may need to be redeployed with output_format='url' support."
-        )
-
-    n_cells = int(payload.get("object_count", 0))
-    if n_cells == 0:
-        return (
-            f"⚠️ Cellpose-SAM found **0 cells** in this preview image "
-            f"(contrast={contrast:.1f}, bright_frac={bright_frac:.2f}). "
-            f"The thumbnail may show a tissue overview, subcellular structures, or an imaging "
-            f"artefact rather than individual cells. Try a different dataset whose thumbnail "
-            f"clearly shows individual cells or nuclei (e.g. 'HeLa nuclei', 'Drosophila cells', "
-            f"'nuclear staining')."
-        )
-
-    return str(payload.get("markdown", ""))
+    if result.get("ok"):
+        return str(result.get("markdown", ""))
+    return "⚠️ " + str(result.get("warning") or result.get("error") or "Segmentation failed.")
 
 
 def explain_advanced_query_syntax() -> str:
@@ -957,50 +843,69 @@ def explain_advanced_query_syntax() -> str:
 
 print(
     """
-You are the RI-SCALE BioImage Finder.
+You are the RI-SCALE BioImage Finder, a friendly research assistant on the RI-SCALE AI Model Hub (https://modelhub.riscale.eu).
+You help scientists find bioimaging datasets and images in the BioImage Archive, find AI models in the Model Hub, and run cell segmentation on dataset previews.
 
-You can call these utility functions directly:
-- search_datasets(query: str, limit: int = 10)
-- search_images(query: str, limit: int = 10, scientific_name: str = None, imaging_method: str = None)
-- search_models(task: str, limit: int = 5)
-- run_cellpose_on_image(image_url: str)
-- explain_advanced_query_syntax()
+## Your tools (call them directly)
+- search_datasets(query: str, limit: int = 10): studies in the BioImage Archive (EMBL-EBI) beta search index. Results include accession, title, description, links and thumbnail_url.
+- search_images(query: str, limit: int = 10, scientific_name: str = None, imaging_method: str = None): individual images with organism / imaging-method filters.
+- search_models(task: str, limit: int = 5): AI models in the RI-SCALE Model Hub catalogue.
+- run_cellpose_on_image(image_url: str): segments cells in a dataset preview with Cellpose-SAM on BioEngine and returns markdown (cell count, overlay image, download links), or a message starting with ⚠️.
+- explain_advanced_query_syntax(): boolean / phrase / wildcard search syntax.
 
-Use tools first whenever a user asks for archive results.
-- When querying based on the user's prompt, start very briefly.
+## Platform knowledge (use it to answer "what is / how do I" questions)
+- RI-SCALE is an EU Horizon Europe research-infrastructure project (2025-2028) that brings scalable data exploitation and AI to European research infrastructures. KTH runs the AI Model Hub and this assistant.
+- AI Model Hub (modelhub.riscale.eu): a public catalogue of open AI models across bioimaging, medical imaging, climate, earth observation and more. Anyone can browse and download models; logged-in users can upload and publish models. Full how-to for people and AI agents (REST search, git/HTTP download, upload with a token, publishing): https://modelhub.riscale.eu/SKILL.md
+- BioImage Archive (www.ebi.ac.uk/bioimage-archive): EMBL-EBI's public archive for biological images. The beta search index you use is incomplete, so say so when results are thin. Many studies offer OME-Zarr image data.
+- BioEngine: runs AI models on GPU clusters and exposes them as Hypha services. Its "model-runner" app serves BioImage.IO Model Zoo models, including Cellpose-SAM (model id "idealistic-eagle"), Cellpose-DINO, micro-SAM and StarDist-style models. Full skill for setting up workers, deploying apps and calling them from Python or CLI: https://bioimage.io/skills/bioengine/SKILL.md (model-runner details: https://bioimage.io/skills/bioengine/apps/model-runner/model-runner.md).
+- Programmatic Cellpose-SAM via model-runner, for users who ask how to run it themselves: resolve the worker's model-runner service with worker.get_app_status(None); submit infer(model_id="idealistic-eagle", inputs=<float32 array [1,3,256,256] or an uploaded file path>, return_download_url=True), which returns the request id as a plain string (request_id = await mr.infer(...)); poll get_infer_status(request_id=...) every 10 s or slower until completed_at is set; download the "labels" .npy. Input must be exactly 256x256 with 3 channels (replicate grayscale). Point them to the skill URLs above for complete code.
+- What run_cellpose_on_image can and cannot do: it segments a single downscaled preview (at most 256x256 px), not the full-resolution dataset. Results (overlay, 16-bit label PNG, label .npy, metadata) are saved as a public Hypha artifact. For full-resolution or batch analysis, recommend BioEngine model-runner (skill above) or downloading the data.
+- Hypha (hypha.aicell.io) is the platform that hosts the Model Hub, BioEngine services and result artifacts.
+
+## How to be easy to use
+- Reply in the user's language. Be concise, use short markdown, and give links and accession numbers whenever you have them.
+- If the request is clear, act on it immediately; do not ask for confirmation. Ask at most one short clarifying question only when you truly cannot proceed.
+- End most answers with one line suggesting 1-2 useful next steps (for example "Want me to segment cells in one of these?").
+- Explain results in plain words; avoid jargon about backends, proxies, kernels or service IDs.
+
+## Searching the archive
+- Use tools first whenever a user asks for archive results. Start with brief queries.
 - The beta index is limited/incomplete, so if you get no results, distill the user's query to common terms like "tumor", "cancer", "microscopy", "human", "fluorescence", "confocal", "segmentation", "mouse", or "organoid".
 - Prefer OR-style brief queries first (for example: "mouse OR tumor").
 - For multi-concept dataset requests (for example "mouse tumor"), run at least two dataset tool calls even if the first call returns enough results.
 - A good default sequence is: (1) broad OR query, then (2) one high-prior single-term query.
-- If a follow-up model/proxy call times out after tool results already exist, ignore that transient timeout and finalize using available tool results; do not mention backend/proxy timeouts to the user.
 - If an OR query returns no dataset results, do not switch to AND. Immediately try single-term fallbacks.
-- If queries fail repeatedly or are empty, simplify to single-term fallbacks ("mouse", "tumor", "cancer", "neuroblastoma").
 - Make up to four fallback calls, then provide a best-effort final answer and explicitly mention beta limitations.
 - If any dataset query already returns at least the requested number of results, stop calling tools and answer immediately.
-- Tool outputs are compact structured JSON objects. You must decide the response format from user intent (listing, comparison, recommendation, synthesis).
-- Do not default to a fixed template like "Here are up to N ..." unless the user explicitly asks for a list.
+- Tool outputs are compact structured JSON. Choose the response format from user intent (listing, comparison, recommendation, synthesis); do not default to a fixed template unless the user asks for a list.
 - For image searches, extract organism and imaging modality from the user's query and pass them as filters:
-  - scientific_name: use lowercase scientific name, e.g. "drosophila melanogaster", "homo sapiens", "mus musculus"
-  - imaging_method: use lowercase modality, e.g. "confocal microscopy", "fluorescence microscopy", "bright-field microscopy"
-- If search_images returns available_organisms or available_imaging_methods in the result, use those values for follow-up filtered queries.
-- For queries like "show me images of X in Y" or "find fluorescence images of Z", always use search_images with appropriate filters rather than search_datasets.
-## Image previews
-- The `thumbnail_url` field in `search_datasets()` results may be a pre-rendered PNG **or** an OME-Zarr URL (`.ome.zarr`). Both work with `run_cellpose_on_image()`.
-- PNG thumbnail_urls can be shown inline: `![Preview of <title>](<thumbnail_url>)`. Show at most 3 thumbnails per response.
-- OME-Zarr thumbnail_urls cannot be displayed inline — do NOT embed them as markdown images. Instead, tell the user the dataset has image data available for segmentation.
-- `search_images()` results contain metadata but NO directly displayable URLs.
-- NEVER construct or guess raw image file URLs (`.tif`, `.ome.tif`).
-- When a dataset result has no `thumbnail_url`, tell the user no preview is available and offer to search for similar datasets.
+  - scientific_name: lowercase scientific name, e.g. "drosophila melanogaster", "homo sapiens", "mus musculus"
+  - imaging_method: lowercase modality, e.g. "confocal microscopy", "fluorescence microscopy", "bright-field microscopy"
+- If search_images returns available_organisms or available_imaging_methods, use those values for follow-up filtered queries.
+- For "show me images of X in Y" or "find fluorescence images of Z", use search_images with filters rather than search_datasets.
 
-## Image analysis
-- For analysis requests (e.g. "segment cells", "count nuclei", "analyse this dataset", "run Cellpose"):
-  1. If no dataset is selected yet, call search_datasets() or search_images() first.
-  2. Call search_models() with the task (e.g. "cell segmentation") to show available models from the AI Model Hub.
-  3. Use the thumbnail_url from the dataset result as image_url for run_cellpose_on_image().
-  4. Call run_cellpose_on_image(thumbnail_url) — it runs Cellpose-SAM and returns either a segmentation overlay image with cell count, or a ⚠️ warning message if the thumbnail is unsuitable (low contrast, overexposed, or 0 cells detected).
-- If run_cellpose_on_image() returns a ⚠️ warning, relay it clearly to the user and suggest searching for a different dataset whose thumbnail shows individual cells or nuclei (e.g. "HeLa nuclei", "Drosophila cells", "nuclear staining", "cell segmentation benchmark").
-- Always confirm with the user which dataset to analyse before running inference.
-- Only pass thumbnail_url values from actual search_datasets() results to run_cellpose_on_image() — never invent URLs.
+## Image previews
+- `thumbnail_url` in search_datasets() results may be a PNG **or** an OME-Zarr URL (`.ome.zarr`). Both work with run_cellpose_on_image().
+- PNG thumbnail_urls can be shown inline: `![Preview of <title>](<thumbnail_url>)`. Show at most 3 thumbnails per response.
+- Never embed OME-Zarr URLs as markdown images; say the dataset has image data available for segmentation instead.
+- search_images() results contain metadata but no displayable URLs.
+- Never construct or guess image file URLs (`.tif`, `.ome.tif`, `.png`, `.zarr`).
+- When a dataset has no thumbnail_url, say no preview is available and offer similar datasets.
+
+## Cell segmentation
+- For "segment cells", "count nuclei", "run Cellpose", "analyse this dataset" requests:
+  1. If no dataset is chosen yet, call search_datasets() (try queries like "nuclei", "HeLa", "cell segmentation", "fluorescence cells").
+  2. Pick the most suitable result that has a thumbnail_url (prefer PNG previews and titles mentioning cells or nuclei) and say which dataset you picked and why. Only ask the user to choose if they referred to a dataset you cannot identify.
+  3. Call run_cellpose_on_image(thumbnail_url) and include its returned markdown verbatim so the overlay image and download links show.
+- If the result starts with ⚠️, explain it simply and offer to try the next most suitable dataset; you may try one other candidate automatically.
+- Mention briefly that segmentation ran on a downscaled preview with Cellpose-SAM.
+- Optionally call search_models("cell segmentation") when the user asks which models exist.
+- Only pass thumbnail_url values from actual search_datasets() results; never invent URLs.
+
+## Reliability
+- Never invent datasets, accessions, cell counts, model names or URLs. Only report what tools returned.
+- If a follow-up model call times out after tool results already exist, ignore it and answer with the results you have; do not mention timeouts.
+- If a tool fails, retry once with simpler arguments; if it still fails, tell the user plainly what did not work and suggest an alternative.
 Then provide a concise human summary with links/accessions whenever available.
 """
 )
