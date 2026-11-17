@@ -37,6 +37,7 @@ const MAX_COLLAPSED_MESSAGE_CHARS = 1200;
 const MAX_COLLAPSED_MESSAGE_LINES = 16;
 const MAX_PROGRESS_TRACE_DETAILS = 30;
 const INPUT_DRAFT_CACHE_KEY = 'ri-scale-agent-input-drafts-v1';
+const GPT6_LUNA_CHAT_MODEL = 'gpt-6-luna';
 const GPT5_NANO_CHAT_MODEL = 'gpt-5-nano';
 const GPT5_MINI_CHAT_MODEL = 'gpt-5-mini';
 const GPT5_CHAT_MODEL = 'gpt-5';
@@ -48,9 +49,10 @@ const O4_MINI_CHAT_MODEL = 'o4-mini';
 const O3_MINI_CHAT_MODEL = 'o3-mini';
 const O3_CHAT_MODEL = 'o3';
 const GPT4O_MINI_CHAT_MODEL = 'gpt-4o-mini';
-const DEFAULT_CHAT_MODEL = GPT41_MINI_CHAT_MODEL;
+const DEFAULT_CHAT_MODEL = GPT6_LUNA_CHAT_MODEL;
 
 const CHAT_MODEL_OPTIONS: Array<{ value: string; label: string }> = [
+  { value: GPT6_LUNA_CHAT_MODEL, label: 'GPT-6 luna' },
   { value: GPT5_NANO_CHAT_MODEL, label: 'GPT-5 nano' },
   { value: GPT5_MINI_CHAT_MODEL, label: 'GPT-5 mini' },
   { value: GPT5_CHAT_MODEL, label: 'GPT-5' },
@@ -198,6 +200,7 @@ const normalizeRequestedChatModel = (candidate: unknown): string | null => {
   const value = typeof candidate === 'string' ? candidate.trim() : '';
   if (!value) return null;
   if (CHAT_MODEL_IDS.has(value)) return value;
+  if (value.startsWith('gpt-6-luna')) return GPT6_LUNA_CHAT_MODEL;
   if (value.startsWith('gpt-5.2')) return GPT52_CHAT_MODEL;
   if (value.startsWith('gpt-5-mini')) return GPT5_MINI_CHAT_MODEL;
   if (value.startsWith('gpt-5-nano')) return GPT5_NANO_CHAT_MODEL;
@@ -1342,7 +1345,7 @@ async def hypha_chat_proxy(messages_json, tools_json, tool_choice_json, model):
     if tool_choice is not None:
       print(f"TRACE: proxy tool_choice => {json.dumps(tool_choice, ensure_ascii=False)}")
 
-    fallback_model = '${DEFAULT_CHAT_MODEL}'
+    fallback_model = '${GPT41_MINI_CHAT_MODEL}'
     result = await _python_fallback_chat_completion(messages, tools, tool_choice, model)
 
     if (

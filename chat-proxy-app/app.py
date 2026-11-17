@@ -166,6 +166,185 @@ async def resolve_url(
     return result
 
 
+# Models that must be called via /v1/responses: they reject function tools
+# with reasoning on /v1/chat/completions. The proxy keeps the Chat Completions
+# request/response shape at its boundary and translates internally.
+_RESPONSES_API_MODEL_PREFIXES = ("gpt-6",)
+
+
+def _uses_responses_api(model: str) -> bool:
+    return model.startswith(_RESPONSES_API_MODEL_PREFIXES)
+
+
+def _content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    return json.dumps(content)
+
+
+def _convert_user_content(content: Any) -> Any:
+    if not isinstance(content, list):
+        return _content_to_text(content)
+    parts: list[dict[str, Any]] = []
+    for part in content:
+        if not isinstance(part, dict):
+            parts.append({"type": "input_text", "text": str(part)})
+        elif part.get("type") == "text":
+            parts.append({"type": "input_text", "text": part.get("text", "")})
+        elif part.get("type") == "image_url":
+            image = part.get("image_url")
+            url = image.get("url") if isinstance(image, dict) else image
+            item: dict[str, Any] = {"type": "input_image", "image_url": url}
+            if isinstance(image, dict) and image.get("detail"):
+                item["detail"] = image["detail"]
+            parts.append(item)
+        else:
+            parts.append(part)
+    return parts
+
+
+def _messages_to_responses_input(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for msg in messages:
+        role = msg.get("role")
+        if role in ("system", "developer"):
+            items.append({"role": role, "content": _content_to_text(msg.get("content"))})
+        elif role == "user":
+            items.append({"role": "user", "content": _convert_user_content(msg.get("content"))})
+        elif role == "assistant":
+            text = _content_to_text(msg.get("content"))
+            if text:
+                items.append({"role": "assistant", "content": text})
+            for call in msg.get("tool_calls") or []:
+                fn = call.get("function") or {}
+                arguments = fn.get("arguments", "{}")
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments)
+                items.append(
+                    {
+                        "type": "function_call",
+                        "call_id": call.get("id"),
+                        "name": fn.get("name"),
+                        "arguments": arguments,
+                    }
+                )
+        elif role == "tool":
+            items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": msg.get("tool_call_id"),
+                    "output": _content_to_text(msg.get("content")),
+                }
+            )
+    return items
+
+
+def _tools_to_responses(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    converted = []
+    for tool in tools:
+        fn = tool.get("function") if tool.get("type") == "function" else None
+        if fn is None:
+            converted.append(tool)
+            continue
+        item: dict[str, Any] = {
+            "type": "function",
+            "name": fn.get("name"),
+            "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+            # Responses API defaults to strict schemas; our tool schemas aren't
+            # written for strict mode, so keep Chat Completions semantics.
+            "strict": bool(fn.get("strict", False)),
+        }
+        if fn.get("description"):
+            item["description"] = fn["description"]
+        converted.append(item)
+    return converted
+
+
+def _tool_choice_to_responses(tool_choice: Any) -> Any:
+    if isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+        name = (tool_choice.get("function") or {}).get("name") or tool_choice.get("name")
+        return {"type": "function", "name": name}
+    return tool_choice
+
+
+def _responses_to_chat_completion(response: Any) -> dict[str, Any]:
+    data = json.loads(response.model_dump_json())
+    text_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    for item in data.get("output") or []:
+        if item.get("type") == "message":
+            for part in item.get("content") or []:
+                if part.get("type") == "output_text":
+                    text_parts.append(part.get("text", ""))
+                elif part.get("type") == "refusal":
+                    text_parts.append(part.get("refusal", ""))
+        elif item.get("type") == "function_call":
+            tool_calls.append(
+                {
+                    "id": item.get("call_id"),
+                    "type": "function",
+                    "function": {
+                        "name": item.get("name"),
+                        "arguments": item.get("arguments", "{}"),
+                    },
+                }
+            )
+
+    message: dict[str, Any] = {"role": "assistant", "content": "".join(text_parts)}
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+        if not message["content"]:
+            message["content"] = None
+        finish_reason = "tool_calls"
+    elif data.get("status") == "incomplete":
+        finish_reason = "length"
+    else:
+        finish_reason = "stop"
+
+    usage = data.get("usage") or {}
+    return {
+        "id": data.get("id"),
+        "object": "chat.completion",
+        "created": int(data.get("created_at") or 0),
+        "model": data.get("model"),
+        "choices": [{"index": 0, "message": message, "finish_reason": finish_reason}],
+        "usage": {
+            "prompt_tokens": usage.get("input_tokens", 0),
+            "completion_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        },
+    }
+
+
+async def _responses_completion(
+    messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None,
+    tool_choice: dict[str, Any] | str | None,
+    model: str,
+) -> dict[str, Any]:
+    assert _client is not None
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "input": _messages_to_responses_input(messages),
+        "store": False,
+    }
+    if tools:
+        kwargs["tools"] = _tools_to_responses(tools)
+        if tool_choice:
+            kwargs["tool_choice"] = _tool_choice_to_responses(tool_choice)
+    response = await _client.responses.create(**kwargs)
+    return _responses_to_chat_completion(response)
+
+
 async def chat_completion(
     messages: list[dict[str, Any]],
     tools: list[dict[str, Any]] | None = None,
@@ -182,6 +361,9 @@ async def chat_completion(
 
     assert _client is not None
     try:
+        if _uses_responses_api(model):
+            return await _responses_completion(messages, tools, tool_choice, model)
+
         kwargs: dict[str, Any] = {"model": model, "messages": messages}
         if tools:
             kwargs["tools"] = tools
