@@ -393,6 +393,8 @@ _CELLPOSE_INPUT_SIZE = 256  # Cellpose-SAM RDF declares a fixed [1, 3, 256, 256]
 _SEGMENTATION_DEADLINE_S = 100.0  # stay under the chat UI's per-tool hard timeout
 _RESULTS_WORKSPACE = "ri-scale"
 _RESULTS_ALIAS_PREFIX = "chatbot-segmentation"
+# No backslash escapes in this file: the web-python loader unescapes them.
+_PARAGRAPH = chr(10) * 2
 _model_runner: Any = None
 
 
@@ -630,8 +632,8 @@ async def _publish_result(preview: Any, overlay: Any, mask: Any, n_objects: int,
         "metadata_url": f"{base}/metadata.json",
         "markdown": (
             f"**{n_objects} cell{'s' if n_objects != 1 else ''} detected** "
-            f"(Cellpose-SAM, {w}x{h} px preview)\n\n"
-            f"![Segmentation overlay]({base}/overlay.png)\n\n"
+            f"(Cellpose-SAM, {w}x{h} px preview){_PARAGRAPH}"
+            f"![Segmentation overlay]({base}/overlay.png){_PARAGRAPH}"
             f"Downloads: [labels (16-bit PNG)]({base}/labels.png) · "
             f"[labels (npy)]({base}/labels.npy) · [metadata]({base}/metadata.json)"
         ),
