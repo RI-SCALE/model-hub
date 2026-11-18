@@ -5,9 +5,11 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
+# Read-only health check: keep it out of the deploy concurrency group so a
+# scheduled run can never cancel a queued production deploy.
 concurrency:
-  group: hypha-ri-scale-apps
-  cancel-in-progress: false
+  group: chat-proxy-monitor
+  cancel-in-progress: true
 
 jobs:
   monitor-and-notify:

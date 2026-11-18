@@ -10,6 +10,9 @@ on:
       - main
   workflow_dispatch:
 
+# A merge fires both `push` and `pull_request: closed`; this group serialises
+# them (and dev deploys) so two hypha-apps-cli clients never run at once.
+# Without it the runs collided and the loser's rollback reverted prod.
 concurrency:
   group: hypha-ri-scale-apps
   cancel-in-progress: false
