@@ -6,7 +6,7 @@ const CHAT_READY_TIMEOUT = 120_000;
 async function openAgentChat(page: Page) {
   await page.goto('/#/agents');
 
-  const input = page.locator('textarea[placeholder*="Type a message"]');
+  const input = page.locator('[data-testid="chat-input"]');
   await expect(input).toBeVisible({ timeout: CHAT_READY_TIMEOUT });
   await expect(input).toBeEnabled({ timeout: CHAT_READY_TIMEOUT });
 
@@ -120,7 +120,7 @@ test.describe('BioImage Finder chat resilience', () => {
       await expect(cancelButton).toHaveCount(0);
     } else {
       await expect(cancelButton).toHaveCount(0);
-      await expect(page.locator('textarea[placeholder*="Type a message"]')).toBeEnabled({ timeout: 20_000 });
+      await expect(page.locator('[data-testid="chat-input"]')).toBeEnabled({ timeout: 20_000 });
     }
 
     await page.evaluate(() => {

@@ -11,7 +11,7 @@ async function openAgentChat(page: Page) {
   for (let attempt = 1; attempt <= 2; attempt += 1) {
     await page.goto('/#/agents');
 
-    const input = page.locator('textarea[placeholder*="Type a message"]');
+    const input = page.locator('[data-testid="chat-input"]');
     try {
       await expect(input).toBeVisible({ timeout: CHAT_READY_TIMEOUT / 2 });
       await expect(input).toBeEnabled({ timeout: CHAT_READY_TIMEOUT / 2 });

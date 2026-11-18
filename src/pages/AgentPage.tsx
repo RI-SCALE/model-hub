@@ -1184,7 +1184,12 @@ class _ProxyHTTPXResponse:
         raise RuntimeError(f"Server error '{self.status_code}' for url '{self.url}': {detail}")
       raise RuntimeError(f"Server error '{self.status_code}' for url '{self.url}'")
 
+_utility_proxy_cache = {"proxy": None}
+
 async def _resolve_proxy_service_for_utilities():
+  cached = _utility_proxy_cache.get("proxy")
+  if cached is not None:
+    return cached
   service_ids = json.loads('${chatProxyServiceIdsLiteral}')
   server = await connect_to_server({
     "server_url": "https://hypha.aicell.io",
@@ -1208,6 +1213,7 @@ async def _resolve_proxy_service_for_utilities():
     raise RuntimeError("No chat-proxy service IDs configured")
 
   print(f"DEBUG: Utility proxy resolved via {resolved_service_id}")
+  _utility_proxy_cache["proxy"] = proxy
   return proxy
 
 async def _proxy_request_url_via_service(url, method="GET", headers=None, timeout=30.0):
@@ -1232,6 +1238,7 @@ async def _proxy_request_url_via_service(url, method="GET", headers=None, timeou
       "text": str(payload),
     }
   except Exception as exp:
+    _utility_proxy_cache["proxy"] = None  # reconnect on next request
     return {
       "ok": False,
       "error": str(exp),
@@ -3358,6 +3365,7 @@ await _chat_wrapper()
 
               <div className={`max-w-4xl mx-auto relative flex items-end bg-white border border-gray-300 rounded-xl shadow-sm focus-within:ring-2 focus-within:ring-ri-orange focus-within:border-transparent transition-all ${(!isKernelReady || !agentReady) ? 'opacity-60 bg-gray-50' : ''}`}>
                 <textarea
+                  data-testid="chat-input"
                   ref={inputRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}

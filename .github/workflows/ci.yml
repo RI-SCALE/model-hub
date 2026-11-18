@@ -7,7 +7,7 @@ on:
 
 jobs:
   frontend-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -38,7 +38,7 @@ jobs:
         run: pnpm playwright test e2e/navigation.spec.ts e2e/kernel-randomuuid-compat.spec.ts --reporter=line
 
   python-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v6

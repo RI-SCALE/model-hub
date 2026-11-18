@@ -8,7 +8,7 @@ const REAL_PROMPT = 'give me 5 mouse tumor datasets please';
 async function openAgentChat(page: Page) {
   await page.goto('/#/agents');
 
-  const input = page.locator('textarea[placeholder*="Type a message"]');
+  const input = page.locator('[data-testid="chat-input"]');
   await expect(input).toBeVisible({ timeout: CHAT_READY_TIMEOUT });
   await expect(input).toBeEnabled({ timeout: CHAT_READY_TIMEOUT });
 

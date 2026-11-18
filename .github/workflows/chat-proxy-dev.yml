@@ -7,9 +7,13 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: hypha-ri-scale-apps
+  cancel-in-progress: false
+
 jobs:
   deploy-and-test-dev:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       HYPHA_SERVER_URL: ${{ vars.HYPHA_SERVER_URL }}
       HYPHA_WORKSPACE: ${{ vars.HYPHA_WORKSPACE || 'ri-scale' }}

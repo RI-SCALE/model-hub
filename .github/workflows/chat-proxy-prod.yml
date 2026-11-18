@@ -10,10 +10,14 @@ on:
       - main
   workflow_dispatch:
 
+concurrency:
+  group: hypha-ri-scale-apps
+  cancel-in-progress: false
+
 jobs:
   deploy-prod:
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'push' || github.event.pull_request.merged == true
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       HYPHA_SERVER_URL: ${{ vars.HYPHA_SERVER_URL }}
       HYPHA_WORKSPACE: ${{ vars.HYPHA_WORKSPACE || 'ri-scale' }}
@@ -49,7 +53,7 @@ jobs:
             --non-fatal-start \
             --health-check \
             --check-request-url \
-            --model gpt-5-mini
+            --model gpt-6-luna
 
       - name: Roll back to previous commit if deploy failed
         if: steps.deploy_prod.outcome == 'failure'
@@ -60,13 +64,13 @@ jobs:
             --non-fatal-start \
             --health-check \
             --check-request-url \
-            --model gpt-5-mini
+            --model gpt-6-luna
 
       - name: Ensure production health
         run: |
           python scripts/test_chat_proxy.py \
             --app-id "$PROD_APP_ID" \
-            --model gpt-5-mini \
+            --model gpt-6-luna \
             --timeout 120 \
             --check-request-url \
             --request-url "https://beta.bioimagearchive.org/search/search/fts?query=mouse%20OR%20tumor" \

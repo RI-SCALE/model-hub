@@ -5,9 +5,13 @@ on:
     - cron: "*/15 * * * *"
   workflow_dispatch:
 
+concurrency:
+  group: hypha-ri-scale-apps
+  cancel-in-progress: false
+
 jobs:
   monitor-and-notify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       HYPHA_SERVER_URL: ${{ vars.HYPHA_SERVER_URL }}
       HYPHA_WORKSPACE: ${{ vars.HYPHA_WORKSPACE || 'ri-scale' }}
