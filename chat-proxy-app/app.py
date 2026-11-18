@@ -15,6 +15,17 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 _client: AsyncOpenAI | None = None
+_MAX_REDIRECTS = 5
+_MAX_RESPONSE_BYTES = 25 * 1024 * 1024
+# The proxy spends the project's OpenAI key on behalf of anonymous callers, so
+# only models offered in the chat UI are allowed and request size is capped.
+_ALLOWED_MODELS = {
+    "gpt-6-luna", "gpt-5", "gpt-5-mini", "gpt-5-nano", "gpt-5.2",
+    "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o-mini", "o4-mini", "o3-mini", "o3",
+}
+_MAX_MESSAGES = 120
+_MAX_REQUEST_CHARS = 400_000
+_OPENAI_TIMEOUT_S = 90.0
 _DEFAULT_ALLOWED_HOSTS = "beta.bioimagearchive.org,www.ebi.ac.uk,uk1s3.embassy.ebi.ac.uk,livingobjects.ebi.ac.uk"
 
 
@@ -84,7 +95,7 @@ async def setup() -> dict[str, Any]:
         _client = None
         return {"ok": False, "error": "OPENAI_API_KEY is missing"}
 
-    _client = AsyncOpenAI(api_key=key)
+    _client = AsyncOpenAI(api_key=key, timeout=_OPENAI_TIMEOUT_S, max_retries=1)
     logger.info("OpenAI client initialized")
     return {"ok": True}
 
@@ -114,13 +125,14 @@ async def resolve_url(
         )
 
     method_value = str(method or "GET").upper()
-    if method_value not in {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}:
+    if method_value not in {"GET", "HEAD"}:
         return _error_payload(str(url), 400, f"Unsupported method: {method_value}")
+    body = None  # read-only proxy
 
     request_headers = _normalize_headers(headers)
     request_headers.setdefault("User-Agent", "ri-scale-model-hub-chat-proxy/1.0")
 
-    timeout_seconds = max(1.0, float(timeout))
+    timeout_seconds = min(max(1.0, float(timeout)), 60.0)
 
     request_kwargs: dict[str, Any] = {
         "method": method_value,
@@ -134,10 +146,20 @@ async def resolve_url(
             request_kwargs["content"] = str(body)
 
     try:
-        async with httpx.AsyncClient(
-            timeout=timeout_seconds, follow_redirects=True
-        ) as client:
-            response = await client.request(**request_kwargs)
+        async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=False) as client:
+            for _hop in range(_MAX_REDIRECTS + 1):
+                response = await client.request(**request_kwargs)
+                if not response.is_redirect:
+                    break
+                next_url = str(response.next_request.url) if response.next_request else ""
+                next_parsed = urlparse(next_url)
+                if next_parsed.scheme != "https" or (next_parsed.hostname or "").lower() not in _allowed_hosts():
+                    return _error_payload(str(url), 403, "Redirect target is not allowed")
+                request_kwargs["url"] = next_url
+            else:
+                return _error_payload(str(url), 508, "Too many redirects")
+        if len(response.content) > _MAX_RESPONSE_BYTES:
+            return _error_payload(str(url), 413, "Response too large")
     except Exception as exp:
         logger.warning("resolve_url failed for %s: %s", url, exp)
         return _error_payload(str(url), 502, str(exp))
@@ -361,6 +383,12 @@ async def chat_completion(
             return {"error": "Server is missing OpenAI API Key."}
 
     assert _client is not None
+    if model not in _ALLOWED_MODELS:
+        return {"error": f"Model '{model}' is not available on this proxy."}
+    if not isinstance(messages, list) or len(messages) > _MAX_MESSAGES:
+        return {"error": "Conversation is too long; please start a new chat."}
+    if len(json.dumps(messages, default=str)) + len(json.dumps(tools or [], default=str)) > _MAX_REQUEST_CHARS:
+        return {"error": "Request is too large; please start a new chat."}
     try:
         if _uses_responses_api(model):
             return await _responses_completion(messages, tools, tool_choice, model)
@@ -390,7 +418,7 @@ _MODEL_RUNNER_SERVICE_ID = os.environ.get(
 )
 _CELLPOSE_SAM_MODEL_ID = os.environ.get("CELLPOSE_SAM_MODEL_ID", "idealistic-eagle")
 _CELLPOSE_INPUT_SIZE = 256  # Cellpose-SAM RDF declares a fixed [1, 3, 256, 256] input
-_SEGMENTATION_DEADLINE_S = 100.0  # stay under the chat UI's per-tool hard timeout
+_SEGMENTATION_DEADLINE_S = 80.0  # inference budget; whole call is capped at +15 s (kernel waits 120 s)
 _RESULTS_WORKSPACE = "ri-scale"
 _RESULTS_ALIAS_PREFIX = "chatbot-segmentation"
 # No backslash escapes in this file: the web-python loader unescapes them.
@@ -521,16 +549,26 @@ def _fit_to_model_input(rgb: Any) -> tuple[Any, Any, int, int]:
 
 
 async def _run_model(mr: Any, model_input: Any, deadline: float) -> Any:
-    import io
-    import random
-    import numpy as np
-
     request_id = await asyncio.wait_for(
         mr.infer(model_id=_CELLPOSE_SAM_MODEL_ID, inputs=model_input, return_download_url=True),
         timeout=60,
     )
-    # Back off 2s -> 5s -> 10s; the skill asks for >=10s steady-state polling.
-    delays = iter([2, 5])
+    try:
+        return await _poll_labels(mr, request_id, deadline)
+    except BaseException:
+        try:
+            await asyncio.wait_for(mr.cancel_request(request_id=request_id), timeout=10)
+        except BaseException:
+            pass
+        raise
+
+
+async def _poll_labels(mr: Any, request_id: str, deadline: float) -> Any:
+    import io
+    import random
+    import numpy as np
+
+    delays = iter([2, 5])  # then 10 s: the model-runner skill asks for >=10 s steady-state polling
     while True:
         status = await asyncio.wait_for(mr.get_infer_status(request_id=request_id), timeout=30)
         if status.get("completed_at") is not None:
@@ -548,10 +586,6 @@ async def _run_model(mr: Any, model_input: Any, deadline: float) -> Any:
             return np.squeeze(np.load(io.BytesIO(response.content), allow_pickle=False))
         delay = next(delays, 10) * random.uniform(0.8, 1.2)
         if asyncio.get_running_loop().time() + delay > deadline:
-            try:
-                await mr.cancel_request(request_id=request_id)
-            except Exception:
-                pass
             raise TimeoutError("segmentation did not finish in time")
         await asyncio.sleep(delay)
 
@@ -644,8 +678,16 @@ async def segment_cells(image_url: str, context: dict[str, Any] | None = None) -
     """Segment cells in an image (PNG/JPEG or OME-Zarr URL) with Cellpose-SAM.
 
     Returns {"ok": True, "object_count", "markdown", "overlay_url", ...} or
-    {"ok": False, "warning"|"error": "<message for the user>"}.
+    {"ok": False, "warning"|"error": "<message for the user>"}. The whole call
+    (fetch, inference, publish) is bounded by _SEGMENTATION_DEADLINE_S.
     """
+    try:
+        return await asyncio.wait_for(_segment_cells(image_url), timeout=_SEGMENTATION_DEADLINE_S + 15)
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "The segmentation service is busy or warming up. Please try again in a minute."}
+
+
+async def _segment_cells(image_url: str) -> dict[str, Any]:
     global _model_runner
     import numpy as np
 

@@ -800,7 +800,7 @@ async def run_cellpose_on_image(image_url: str) -> str:
     from hypha_rpc import connect_to_server
 
     server = await connect_to_server(
-        {"server_url": "https://hypha.aicell.io", "method_timeout": 150}
+        {"server_url": "https://hypha.aicell.io", "method_timeout": 120}
     )
     try:
         proxy = await server.get_service("ri-scale/default@chat-proxy")
@@ -897,7 +897,7 @@ You help scientists find bioimaging datasets and images in the BioImage Archive,
   1. If no dataset is chosen yet, call search_datasets() (try queries like "nuclei", "HeLa", "cell segmentation", "fluorescence cells").
   2. Pick the most suitable result that has a thumbnail_url (prefer PNG previews and titles mentioning cells or nuclei) and say which dataset you picked and why. Only ask the user to choose if they referred to a dataset you cannot identify.
   3. Call run_cellpose_on_image(thumbnail_url) and include its returned markdown verbatim so the overlay image and download links show.
-- If the result starts with ⚠️, explain it simply and offer to try the next most suitable dataset; you may try one other candidate automatically.
+- If the result starts with ⚠️, explain it simply and offer to try the next most suitable dataset. Do not retry automatically.
 - Mention briefly that segmentation ran on a downscaled preview with Cellpose-SAM.
 - Optionally call search_models("cell segmentation") when the user asks which models exist.
 - Only pass thumbnail_url values from actual search_datasets() results; never invent URLs.
